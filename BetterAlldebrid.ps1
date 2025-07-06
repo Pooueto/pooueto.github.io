@@ -6,7 +6,7 @@
 #  ╚██████╔╝██║     ██████╔╝██║  ██║   ██║   ███████╗██║  ██║
 #   ╚═════╝ ╚═╝     ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚══════╝╚═╝  ╚═╝
 
-$LocalVersion = "3.0.3"
+$LocalVersion = "4.0.0"
 
 $RemoteScriptUrl = "https://raw.githubusercontent.com/Pooueto/pooueto.github.io/refs/heads/main/BetterAlldebrid.ps1"
 
@@ -1751,6 +1751,136 @@ function Wait-ForTorrentCompletion {
 }
 
 
+#   █████╗ ██████╗ ██╗ █████╗ ██████╗      ██████╗ ██████╗ ███╗   ██╗███████╗
+#  ██╔══██╗██╔══██╗██║██╔══██╗╚════██╗    ██╔════╝██╔═══██╗████╗  ██║██╔════╝
+#  ███████║██████╔╝██║███████║ █████╔╝    ██║     ██║   ██║██╔██╗ ██║█████╗
+#  ██╔══██║██╔══██╗██║██╔══██║██╔═══╝     ██║     ██║   ██║██║╚██╗██║██╔══╝
+#  ██║  ██║██║  ██║██║██║  ██║███████╗    ╚██████╗╚██████╔╝██║ ╚████║██║
+#  ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝╚═╝  ╚═╝╚══════╝     ╚═════╝ ╚═════╝ ╚═╝  ╚═══╝╚═╝
+#
+$Aria2cPath = "aria2c.exe"                     # Chemin vers aria2c.exe (si non dans le PATH, mettez le chemin complet)
+$MaxConnectionsPerServer = 16                  # Nombre maximum de connexions par serveur pour aria2c (multi-threading)
+$SplitDownloads = 16                           # Nombre de splits (segments) pour le téléchargement (multi-threading)
+
+function Start-Aria2cDownload {
+    param (
+        [string]$DirectLink,
+        [string]$OutputDirectory
+    )
+
+    # Obtenir le nom de fichier pour le log, en s'assurant qu'il est valide
+    $fileName = [System.IO.Path]::GetFileNameWithoutExtension($DirectLink)
+    if ([string]::IsNullOrEmpty($fileName)) {
+        $fileName = "unknown_file_" + (Get-Random)
+    }
+    # Nettoyer le nom du fichier pour les caractères interdits dans les chemins
+    #$sanitizedFileName = ($fileName -replace '[\\/:*?"<>|]', '_')
+
+    #$LogFile = Join-Path -Path $OutputDirectory -ChildPath "$($sanitizedFileName)_aria2c.log"
+
+    $Aria2cArguments = @(
+        "--dir=$OutputDirectory",
+        "--max-connection-per-server=$MaxConnectionsPerServer",
+        "--split=$SplitDownloads",
+        "--auto-file-renaming=false",
+        "--file-allocation=none",
+        "--continue=true",
+        "--console-log-level=warn", # Réduit le bruit de la console
+        #"--log=$LogFile",           # Enregistre le log dans un fichier
+        $DirectLink
+    )
+
+    Write-Host "Lancement du téléchargement avec aria2c pour : $DirectLink (en arrière-plan)"
+    Write-Host "Commande aria2c : $Aria2cPath $($Aria2cArguments -join ' ')"
+
+    try {
+        # --- MODIFICATION CLÉ ICI : Suppression de -Wait ---
+        $Process = Start-Process -FilePath $Aria2cPath -ArgumentList $Aria2cArguments -NoNewWindow -PassThru
+        # -NoNewWindow: Empêche l'ouverture d'une nouvelle fenêtre de console pour aria2c
+        # -PassThru: Retourne l'objet processus (utile si on voulait le suivre)
+        # PAS de -Wait: Le script continue son exécution immédiatement.
+
+        if ($Process) {
+            Write-Host "Processus aria2c lancé (PID: $($Process.Id)). Les logs sont dans : $LogFile"
+            return $Process.Id # Retourne le PID si vous voulez le suivre plus tard
+        } else {
+            Write-Error "Impossible de démarrer le processus aria2c pour $DirectLink."
+            return $null
+        }
+    }
+    catch {
+        Write-Error "Erreur lors de l'exécution de aria2c : $($_.Exception.Message)"
+        return $null
+    }
+}
+
+# --- Nouvelle fonction pour gérer les téléchargements via Aria2c ---
+function Start-AlldebridAria2cDownload {
+    param (
+        [string[]]$Links,
+        [string]$Category = ""
+    )
+
+    Initialize-Environment # Assurez-vous que l'environnement est initialisé (clés API, dossiers, etc.)
+
+    $destinationFolder = $script:currentDownloadFolder
+    if ($Category -ne "") {
+        $destinationFolder = Join-Path -Path $script:currentDownloadFolder -ChildPath $Category
+        if (-not (Test-Path -Path $destinationFolder)) {
+            New-Item -ItemType Directory -Path $destinationFolder | Out-Null
+            Write-Log "Dossier de catégorie créé: $destinationFolder"
+        }
+    }
+
+    Write-Host "`n--- Démarrage des téléchargements avec Aria2c ---" -ForegroundColor Green
+
+    $successCount = 0
+    $failCount = 0
+
+    foreach ($link in $Links) {
+        Write-Log "---------------------------------------------"
+        Write-Log "Traitement du lien: $link"
+
+        $unlocked = Unlock-AlldebridLink -Link $link
+
+        if ($null -ne $unlocked) {
+            $downloadLink = $unlocked.link
+            $fileName = $unlocked.filename
+
+            if ([string]::IsNullOrEmpty($fileName)) {
+                $uri = New-Object System.Uri($downloadLink)
+                $fileName = [System.IO.Path]::GetFileName($uri.LocalPath)
+                if ([string]::IsNullOrEmpty($fileName)) {
+                    $fileName = "download_$(Get-Date -Format 'yyyyMMdd_HHmmss').bin"
+                }
+            }
+
+            Write-Log "Lien direct obtenu pour: $fileName"
+            Write-Log "Démarrage du téléchargement avec Aria2c vers : $destinationFolder"
+
+            # Appel à la fonction Aria2c. Notez que Start-Aria2cDownload gère déjà la logique pour le nom de fichier
+            $aria2cPid = Start-Aria2cDownload -DirectLink $downloadLink -OutputDirectory $destinationFolder
+
+            if ($aria2cPid) {
+                Write-Log "Aria2c PID: $aria2cPid (Le téléchargement se fait en arrière-plan)."
+                Write-Host "Téléchargement '$fileName' lancé avec Aria2c. (PID: $aria2cPid)" -ForegroundColor DarkGreen
+                $successCount++
+            } else {
+                Write-Log "Échec du lancement d'Aria2c pour le lien: $link"
+                Write-Host "Échec du lancement d'Aria2c pour le lien: $link" -ForegroundColor Red
+                $failCount++
+            }
+        } else {
+            Write-Log "Échec du débridage du lien: $link"
+            Write-Host "Échec du débridage du lien: $link" -ForegroundColor Red
+            $failCount++
+        }
+    }
+    Pause
+    Show-Menu
+}
+
+
 #  ███████╗ █████╗ ███████╗████████╗███████╗██████╗     ███████╗ ██████╗  ██████╗ ███████╗
 #  ██╔════╝██╔══██╗██╔════╝╚══██╔══╝██╔════╝██╔══██╗    ██╔════╝██╔════╝ ██╔════╝ ██╔════╝
 #  █████╗  ███████║███████╗   ██║   █████╗  ██████╔╝    █████╗  ██║  ███╗██║  ███╗███████╗
@@ -1901,12 +2031,13 @@ function Show-Menu {
     Write-Host "7. Gestionnaire de torrents"
     Write-Host "8. Afficher l'historique des liens débridés"
     Write-Host "9. Speedtest"
+    Write-Host "10. Télécharger avec aria2 (un peu PT, mais c'est rapide t'inquite 👀)"
     Write-Host "Q. Quitter"
     Write-Host "========================================"
     Write-Host "Dossier de téléchargement actuel: $script:currentDownloadFolder" -ForegroundColor Yellow
     Write-Host "========================================"
 
-    $choice = Read-Host "Choisissez une option (1-9 Or Q)"
+    $choice = Read-Host "Choisissez une option (1-10 Or Q)"
 
     switch ($choice) {
         "1" {
@@ -1994,6 +2125,31 @@ function Show-Menu {
             Pause
             Show-Menu
 
+        }
+
+        "10" {
+            Write-Host "`nVeuillez coller les liens AllDebrid à télécharger avec Aria2c (un par ligne), puis appuyez sur Entrée deux fois pour terminer." -ForegroundColor Green
+            # Cette fonction Read-HostMultipleLines n'est pas dans le script, vous devrez l'implémenter ou la remplacer
+            # Par exemple, une boucle simple:
+            $linksInput = @()
+            do {
+                $line = Read-Host "Entrez un lien (ou laissez vide et appuyez sur Entrée pour finir)"
+                if (-not [string]::IsNullOrWhiteSpace($line)) {
+                    $linksInput += $line.Trim()
+                }
+            } while (-not [string]::IsNullOrWhiteSpace($line))
+
+            $linksToDownload = $linksInput | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+
+            if ($linksToDownload.Count -gt 0) {
+                Write-Host "`nEntrez une catégorie optionnelle pour les téléchargements (laissez vide pour le dossier par défaut) :" -ForegroundColor DarkYellow
+                $category = Read-Host
+
+                Start-AlldebridAria2cDownload -Links $linksToDownload -Category $category
+            } else {
+                Write-Host "Aucun lien fourni. Retour au menu." -ForegroundColor Red
+                Pause
+            }
         }
 
         "blyat" {
