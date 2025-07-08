@@ -6,7 +6,7 @@
 #  ╚██████╔╝██║     ██████╔╝██║  ██║   ██║   ███████╗██║  ██║
 #   ╚═════╝ ╚═╝     ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚══════╝╚═╝  ╚═╝
 
-$LocalVersion = "4.0.0"
+$LocalVersion = "4.0.1"
 
 $RemoteScriptUrl = "https://raw.githubusercontent.com/Pooueto/pooueto.github.io/refs/heads/main/BetterAlldebrid.ps1"
 
@@ -1795,7 +1795,7 @@ function Start-Aria2cDownload {
 
     try {
         # --- MODIFICATION CLÉ ICI : Suppression de -Wait ---
-        $Process = Start-Process -FilePath $Aria2cPath -ArgumentList $Aria2cArguments -NoNewWindow -PassThru
+        $Process = Start-Process -FilePath $Aria2cPath -ArgumentList $Aria2cArguments  -PassThru #-NoNewWindow
         # -NoNewWindow: Empêche l'ouverture d'une nouvelle fenêtre de console pour aria2c
         # -PassThru: Retourne l'objet processus (utile si on voulait le suivre)
         # PAS de -Wait: Le script continue son exécution immédiatement.
@@ -2033,9 +2033,9 @@ function Show-Menu {
     Write-Host "9. Speedtest"
     Write-Host "10. Télécharger avec aria2 (un peu PT, mais c'est rapide t'inquite 👀)"
     Write-Host "Q. Quitter"
-    Write-Host "========================================"
-    Write-Host "Dossier de téléchargement actuel: $script:currentDownloadFolder" -ForegroundColor Yellow
-    Write-Host "========================================"
+    Write-Host "========================================================================================================================"
+    Write-Centered "Dossier de téléchargement actuel: $script:currentDownloadFolder" -ForegroundColor Yellow
+    Write-Host "========================================================================================================================"
 
     $choice = Read-Host "Choisissez une option (1-10 Or Q)"
 
@@ -2149,6 +2149,7 @@ function Show-Menu {
             } else {
                 Write-Host "Aucun lien fourni. Retour au menu." -ForegroundColor Red
                 Pause
+                Show-Menu
             }
         }
 
