@@ -1759,8 +1759,8 @@ function Wait-ForTorrentCompletion {
 #  ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝╚═╝  ╚═╝╚══════╝     ╚═════╝ ╚═════╝ ╚═╝  ╚═══╝╚═╝
 #
 $Aria2cPath = "aria2c.exe"                     # Chemin vers aria2c.exe (si non dans le PATH, mettez le chemin complet)
-$MaxConnectionsPerServer = 50                  # Nombre maximum de connexions par serveur pour aria2c (multi-threading)
-$SplitDownloads = 100                          # Nombre de splits (segments) pour le téléchargement (multi-threading)
+$MaxConnectionsPerServer = 16                  # Nombre maximum de connexions par serveur pour aria2c (multi-threading)
+$SplitDownloads = 50                          # Nombre de splits (segments) pour le téléchargement (multi-threading)
 
 function Start-Aria2cDownload {
     param (
