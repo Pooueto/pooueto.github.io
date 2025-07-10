@@ -6,7 +6,7 @@
 #  ╚██████╔╝██║     ██████╔╝██║  ██║   ██║   ███████╗██║  ██║
 #   ╚═════╝ ╚═╝     ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚══════╝╚═╝  ╚═╝
 
-$LocalVersion = "4.0.1"
+$LocalVersion = "4.0.2"
 
 $RemoteScriptUrl = "https://raw.githubusercontent.com/Pooueto/pooueto.github.io/refs/heads/main/BetterAlldebrid.ps1"
 
@@ -1759,8 +1759,8 @@ function Wait-ForTorrentCompletion {
 #  ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝╚═╝  ╚═╝╚══════╝     ╚═════╝ ╚═════╝ ╚═╝  ╚═══╝╚═╝
 #
 $Aria2cPath = "aria2c.exe"                     # Chemin vers aria2c.exe (si non dans le PATH, mettez le chemin complet)
-$MaxConnectionsPerServer = 16                  # Nombre maximum de connexions par serveur pour aria2c (multi-threading)
-$SplitDownloads = 16                           # Nombre de splits (segments) pour le téléchargement (multi-threading)
+$MaxConnectionsPerServer = 50                  # Nombre maximum de connexions par serveur pour aria2c (multi-threading)
+$SplitDownloads = 100                          # Nombre de splits (segments) pour le téléchargement (multi-threading)
 
 function Start-Aria2cDownload {
     param (
@@ -1795,7 +1795,7 @@ function Start-Aria2cDownload {
 
     try {
         # --- MODIFICATION CLÉ ICI : Suppression de -Wait ---
-        $Process = Start-Process -FilePath $Aria2cPath -ArgumentList $Aria2cArguments  -PassThru #-NoNewWindow
+        $Process = Start-Process -FilePath $Aria2cPath -ArgumentList $Aria2cArguments  -PassThru -NoNewWindow
         # -NoNewWindow: Empêche l'ouverture d'une nouvelle fenêtre de console pour aria2c
         # -PassThru: Retourne l'objet processus (utile si on voulait le suivre)
         # PAS de -Wait: Le script continue son exécution immédiatement.
