@@ -6,7 +6,7 @@
 #  ╚██████╔╝██║     ██████╔╝██║  ██║   ██║   ███████╗██║  ██║
 #   ╚═════╝ ╚═╝     ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚══════╝╚═╝  ╚═╝
 
-$LocalVersion = "4.0.2"
+$LocalVersion = "5.0.0"
 
 $RemoteScriptUrl = "https://raw.githubusercontent.com/Pooueto/pooueto.github.io/refs/heads/main/BetterAlldebrid.ps1"
 
@@ -2032,12 +2032,13 @@ function Show-Menu {
     Write-Host "8. Afficher l'historique des liens débridés"
     Write-Host "9. Speedtest"
     Write-Host "10. Télécharger avec aria2 (un peu PT, mais c'est rapide t'inquite 👀)"
+    Write-Host "11. Server Mode"
     Write-Host "Q. Quitter"
     Write-Host "========================================================================================================================"
     Write-Centered "Dossier de téléchargement actuel: $script:currentDownloadFolder" -ForegroundColor Yellow
     Write-Host "========================================================================================================================"
 
-    $choice = Read-Host "Choisissez une option (1-10 Or Q)"
+    $choice = Read-Host "Choisissez une option (1-11 Or Q)"
 
     switch ($choice) {
         "1" {
@@ -2150,6 +2151,338 @@ function Show-Menu {
                 Write-Host "Aucun lien fourni. Retour au menu." -ForegroundColor Red
                 Pause
                 Show-Menu
+            }
+        }
+
+        "11" {
+            # --- Configuration du Serveur ---
+            # Utilisation des variables globales de BetterAlldebrid.ps1 déjà définies
+            $AllDebridApiKey = $predefinedApiKey # Réutilise la clé API globale du script
+            $DownloadFolder = $script:currentDownloadFolder   # Réutilise le dossier de téléchargement global du script
+            $UserAgent = $userAgent # Réutilise l'agent utilisateur global du script
+
+            $WebServerPort = 8080                       # Port sur lequel le serveur web écoutera
+            # Laissez vide pour autoriser toutes les IPs, ou ajoutez des IPs spécifiques (e.g., "192.168.1.100")
+            $AllowedHosts = @() # Exemple: @("127.0.0.1", "192.168.1.10")
+
+            # --- Détermination robuste du chemin racine du script ---
+            # Cette logique assure que $scriptPath est toujours valide, même si $MyInvocation.MyCommand.Path est null.
+            $scriptPath = $PSScriptRoot
+            if (-not $scriptPath) {
+                # Fallback pour les scénarios où $PSScriptRoot n'est pas défini (ex: exécution via F8 dans ISE)
+                $scriptPath = Split-Path -Parent -Path $MyInvocation.MyCommand.Definition
+            }
+            if (-not $scriptPath) {
+                # Dernier recours si même $MyInvocation.MyCommand.Definition est problématique
+                $scriptPath = (Get-Location).Path
+            }
+
+            # Dossier contenant les fichiers web (HTML, JS, CSS)
+            # Il sera créé au même niveau que le script BetterAlldebrid.ps1
+            $WebFilesRoot = Join-Path $scriptPath "WebContent"
+
+            # --- Initialisation des Dossiers ---
+
+            # Le dossier de téléchargement est géré par $script:currentDownloadFolder, initialisé au début du script.
+            # On vérifie si le dossier WebContent existe et le crée si nécessaire.
+            if (-not (Test-Path $WebFilesRoot)) {
+                New-Item -ItemType Directory -Path $WebFilesRoot -Force | Out-Null
+                Write-Host "[INIT] Dossier WebContent créé : $WebFilesRoot" -ForegroundColor Green
+                Write-Log "[INIT] Dossier WebContent créé : $WebFilesRoot"
+            } else {
+                Write-Host "[INIT] Dossier WebContent existe déjà : $WebFilesRoot" -ForegroundColor DarkGreen
+                Write-Log "[INIT] Dossier WebContent existe déjà : $WebFilesRoot"
+            }
+
+            # --- Configuration du téléchargement des fichiers web depuis GitHub ---
+            $GitHubWebContentBaseUrl = "https://raw.githubusercontent.com/Pooueto/BetterAlldebridServer/main/" # Exemple d'URL de base
+            $WebFilesToDownload = @("index.html", "script.js", "style.css") # Liste des fichiers à télécharger
+
+            Write-Host "`n[INIT] Vérification et téléchargement des fichiers web depuis GitHub..." -ForegroundColor Cyan
+            Write-Log "[INIT] Vérification et téléchargement des fichiers web."
+
+            foreach ($file in $WebFilesToDownload) {
+                $localFilePath = Join-Path $WebFilesRoot $file
+                $githubUrl = $GitHubWebContentBaseUrl + $file
+
+                if (-not (Test-Path $localFilePath)) {
+                    Write-Host "[INIT] Téléchargement de '$file' depuis GitHub..." -ForegroundColor Yellow
+                    Write-Log "[INIT] Téléchargement de '$file' depuis '$githubUrl'."
+                    try {
+                        Invoke-WebRequest -Uri $githubUrl -OutFile $localFilePath -UseBasicParsing -TimeoutSec 30
+                        Write-Host "[INIT] '$file' téléchargé avec succès." -ForegroundColor Green
+                        Write-Log "[INIT] '$file' téléchargé."
+                    } catch {
+                        Write-Error "[INIT] Erreur lors du téléchargement de '$file' : $($_.Exception.Message)"
+                        Write-Log "[INIT] Erreur téléchargement '$file' : $($_.Exception.Message)"
+                    }
+                } else {
+                    Write-Host "[INIT] '$file' existe déjà localement. Ignoré le téléchargement." -ForegroundColor DarkGray
+                    Write-Log "[INIT] '$file' existe déjà."
+                }
+            }
+
+            # --- Définition du Serveur Web avec System.Net.HttpListener ---
+
+            Write-Host "`n[SERVEUR] Démarrage du serveur web AllDebrid sur le port $WebServerPort..." -ForegroundColor Cyan
+            Write-Log "[SERVEUR] Démarrage sur le port $WebServerPort."
+
+            $listener = New-Object System.Net.HttpListener
+            $prefix = "http://*:$WebServerPort/"
+            $listener.Prefixes.Add($prefix)
+
+            try {
+                $listener.Start()
+                Write-Host "[SERVEUR] Serveur HTTP démarré. Écoute sur '$prefix'. Appuyez sur Ctrl+C pour arrêter." -ForegroundColor Green
+                Write-Log "[SERVEUR] Démarré et écoute sur '$prefix'."
+
+                # Boucle principale du serveur
+                while ($listener.IsListening) {
+                    $context = $listener.GetContext() # Bloque ici en attendant une requête
+                    $request = $context.Request
+                    $response = $context.Response
+                    $clientIP = $request.RemoteEndPoint.Address.ToString()
+
+                    Write-Host "`n[$(Get-Date -Format 'HH:mm:ss')] [SERVEUR] Requête reçue de $clientIP : $($request.HttpMethod) $($request.Url.AbsolutePath)" -ForegroundColor DarkGray
+                    Write-Log "[SERVEUR] Requête : $clientIP - $($request.HttpMethod) $($request.Url.AbsolutePath)"
+
+                    # --- Middleware pour le filtrage des IPs ---
+                    if ($AllowedHosts.Count -gt 0 -and $clientIP -notin $AllowedHosts) {
+                        Write-Warning "[$(Get-Date -Format 'HH:mm:ss')] [SERVEUR] Requête bloquée depuis une adresse IP non autorisée : $clientIP"
+                        Write-Log "[SERVEUR] Bloqué IP non autorisée : $clientIP"
+                        $response.StatusCode = 403 # Forbidden
+                        $responseString = "Accès refusé depuis cette adresse IP."
+                        $buffer = [System.Text.Encoding]::UTF8.GetBytes($responseString)
+                        $response.ContentLength64 = $buffer.Length
+                        $response.OutputStream.Write($buffer, 0, $buffer.Length)
+                        $response.OutputStream.Close()
+                        continue # Passe à la prochaine itération de la boucle
+                    }
+
+                    # --- Gestion des Routes ---
+
+                    # Endpoint principal pour soumettre les liens (POST /debrid/link)
+                    if ($request.HttpMethod -eq 'POST' -and $request.Url.AbsolutePath -eq '/debrid/link') {
+                        Write-Host "[$(Get-Date -Format 'HH:mm:ss')] [SERVEUR] Traitement POST /debrid/link pour $clientIP." -ForegroundColor Yellow
+                        Write-Log "[SERVEUR] Traitement POST /debrid/link pour $clientIP."
+
+                        $requestBody = ""
+                        if ($request.HasEntityBody) {
+                            $reader = New-Object System.IO.StreamReader($request.InputStream, $request.ContentEncoding)
+                            $requestBody = $reader.ReadToEnd()
+                            $reader.Close()
+                        }
+
+                        Write-Host "[$(Get-Date -Format 'HH:mm:ss')] [SERVEUR] Corps de la requête brute (JSON): $requestBody" -ForegroundColor DarkCyan
+                        Write-Log "[SERVEUR] Corps JSON reçu : $requestBody"
+
+                        $requestData = $null
+                        try {
+                            $requestData = $requestBody | ConvertFrom-Json
+                            Write-Host "[$(Get-Date -Format 'HH:mm:ss')] [SERVEUR] Données JSON parsées: $($requestData | ConvertTo-Json -Depth 2)" -ForegroundColor DarkCyan
+                            Write-Log "[SERVEUR] JSON parsé : $($requestData | ConvertTo-Json -Depth 2)"
+                        } catch {
+                            Write-Warning "[$(Get-Date -Format 'HH:mm:ss')] [SERVEUR] Erreur de parsing JSON pour la requête de $clientIP : $($_.Exception.Message)"
+                            Write-Log "[SERVEUR] Erreur parsing JSON : $($_.Exception.Message)"
+                            $response.StatusCode = 400 # Bad Request
+                            $response.ContentType = 'application/json'
+                            $responseBodyJson = @{ status = "error"; message = "Le corps de la requête doit être un JSON valide." } | ConvertTo-Json
+                            $buffer = [System.Text.Encoding]::UTF8.GetBytes($responseBodyJson)
+                            $response.ContentLength64 = $buffer.Length
+                            $response.OutputStream.Write($buffer, 0, $buffer.Length)
+                            $response.OutputStream.Close()
+                            continue
+                        }
+
+                        $linkToDebrid = $requestData.link
+                        $category = $requestData.category # Récupérer la catégorie si envoyée par le client
+
+                        if ([string]::IsNullOrWhiteSpace($linkToDebrid)) {
+                            Write-Warning "[$(Get-Date -Format 'HH:mm:ss')] [SERVEUR] Requête de débridage sans lien depuis $clientIP."
+                            Write-Log "[SERVEUR] Lien manquant dans la requête."
+                            $response.StatusCode = 400 # Bad Request
+                            $response.ContentType = 'application/json'
+                            $responseBodyJson = @{ status = "error"; message = "Le paramètre 'link' est manquant dans le corps JSON." } | ConvertTo-Json
+                            $buffer = [System.Text.Encoding]::UTF8.GetBytes($responseBodyJson)
+                            $response.ContentLength64 = $buffer.Length
+                            $response.OutputStream.Write($buffer, 0, $buffer.Length)
+                            $response.OutputStream.Close()
+                            continue
+                        }
+
+                        Write-Host "[$(Get-Date -Format 'HH:mm:ss')] [SERVEUR] Lien à débrider extrait : '$linkToDebrid'." -ForegroundColor Yellow
+                        Write-Log "[SERVEUR] Lien extrait : '$linkToDebrid'"
+
+                        # Exécuter le débridage via la fonction existante de BetterAlldebrid.ps1
+                        $unlocked = Unlock-AlldebridLink -Link $linkToDebrid
+
+                        if ($unlocked) {
+                            $fileName = $unlocked.filename
+                            $downloadLink = $unlocked.link
+
+                            if ([string]::IsNullOrWhiteSpace($fileName) -or [string]::IsNullOrWhiteSpace($downloadLink)) {
+                                Write-Error "[$(Get-Date -Format 'HH:mm:ss')] [SERVEUR] Informations de téléchargement incomplètes après débridage pour '$linkToDebrid'."
+                                Write-Log "[SERVEUR] Infos de téléchargement incomplètes après débridage pour '$linkToDebrid'."
+                                $response.StatusCode = 500 # Internal Server Error
+                                $response.ContentType = 'application/json'
+                                $responseBodyJson = @{ status = "error"; message = "Le débridage a réussi mais les informations de fichier sont incomplètes." } | ConvertTo-Json
+                                $buffer = [System.Text.Encoding]::UTF8.GetBytes($responseBodyJson)
+                                $response.ContentLength64 = $buffer.Length
+                                $response.OutputStream.Write($buffer, 0, $buffer.Length)
+                            } else {
+                                # Déterminer le dossier de destination avec la catégorie
+                                $finalDownloadFolder = $DownloadFolder # Commence avec le dossier global
+                                if (-not [string]::IsNullOrWhiteSpace($category)) {
+                                    # Utilise Remove-InvalidFileNameChars pour le nom de la catégorie aussi
+                                    $finalDownloadFolder = Join-Path $DownloadFolder (Remove-InvalidFileNameChars -Name $category)
+                                    if (-not (Test-Path $finalDownloadFolder)) {
+                                        New-Item -ItemType Directory -Path $finalDownloadFolder -Force | Out-Null
+                                        Write-Host "[$(Get-Date -Format 'HH:mm:ss')] [SERVEUR] Dossier de catégorie créé : $finalDownloadFolder" -ForegroundColor DarkGreen
+                                        Write-Log "[SERVEUR] Dossier catégorie créé : $finalDownloadFolder"
+                                    }
+                                }
+
+                                # Démarrer le téléchargement en arrière-plan pour ne pas bloquer la réponse HTTP
+                                # Le scriptblock de Start-Job doit être autonome ou utiliser des variables passées.
+                                # Redéfinir les fonctions nécessaires localement dans le job.
+                                Start-Job -ScriptBlock {
+                                    param($DownloadUrl, $FileName, $DownloadDestFolder, $ClientIP, $LogFilePath)
+
+                                    # Redéfinir Remove-InvalidFileNameChars localement dans le job
+                                    function local:Remove-InvalidFileNameChars {
+                                        param([string]$Name)
+                                        $invalidChars = [System.IO.Path]::GetInvalidFileNameChars()
+                                        foreach ($char in $invalidChars) {
+                                            $Name = $Name.Replace($char, '_')
+                                        }
+                                        return $Name
+                                    }
+
+                                    # Fonction de log simplifiée pour le job, écrivant dans le fichier de log principal
+                                    function local:Job-Write-Log {
+                                        param([string]$Message)
+                                        $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                                        "$timestamp - [JOB] $Message" | Out-File -FilePath $LogFilePath -Append
+                                    }
+
+                                    $safeFileName = local:Remove-InvalidFileNameChars -Name $FileName
+                                    $outputPath = Join-Path $DownloadDestFolder $safeFileName
+
+                                    local:Job-Write-Log "Démarrage du téléchargement de '$FileName' pour $ClientIP vers '$outputPath'..."
+                                    Write-Host "[$(Get-Date -Format 'HH:mm:ss')] [Job] Démarrage du téléchargement de '$FileName' pour $ClientIP vers '$outputPath'..." -ForegroundColor Blue
+                                    try {
+                                        Invoke-WebRequest -Uri $DownloadUrl -OutFile $outputPath -TimeoutSec 7200
+                                        local:Job-Write-Log "Téléchargement de '$FileName' terminé pour $ClientIP."
+                                        Write-Host "[$(Get-Date -Format 'HH:mm:ss')] [Job] Téléchargement de '$FileName' terminé pour $ClientIP." -ForegroundColor Green
+                                    } catch {
+                                        local:Job-Write-Log "Erreur lors du téléchargement de '$FileName' pour $ClientIP : $($_.Exception.Message)"
+                                        Write-Error "[$(Get-Date -Format 'HH:mm:ss')] [Job] Erreur lors du téléchargement de '$FileName' pour $ClientIP : $($_.Exception.Message)"
+                                    }
+                                } -ArgumentList $downloadLink, $fileName, $finalDownloadFolder, $clientIP, $script:logFile | Out-Null
+
+                                $response.StatusCode = 200 # OK
+                                $response.ContentType = 'application/json'
+                                $responseBodyJson = @{
+                                    status = "success";
+                                    message = "Lien débridé et téléchargement initié en arrière-plan.";
+                                    filename = $fileName;
+                                    downloadLink = $downloadLink;
+                                    downloadFolder = $finalDownloadFolder
+                                } | ConvertTo-Json
+                                $buffer = [System.Text.Encoding]::UTF8.GetBytes($responseBodyJson)
+                                $response.ContentLength64 = $buffer.Length
+                                $response.OutputStream.Write($buffer, 0, $buffer.Length)
+                                Write-Log "[SERVEUR] Réponse succès pour $clientIP : Téléchargement lancé."
+                            }
+                        } else {
+                            Write-Error "[$(Get-Date -Format 'HH:mm:ss')] [SERVEUR] Le lien '$linkToDebrid' n'a pas pu être débridé par AllDebrid."
+                            Write-Log "[SERVEUR] Échec débridage pour '$linkToDebrid'."
+                            $response.StatusCode = 500 # Internal Server Error
+                            $response.ContentType = 'application/json'
+                            $responseBodyJson = @{ status = "error"; message = "Le lien n'a pas pu être débridé par AllDebrid." } | ConvertTo-Json
+                            $buffer = [System.Text.Encoding]::UTF8.GetBytes($responseBodyJson)
+                            $response.ContentLength64 = $buffer.Length
+                            $response.OutputStream.Write($buffer, 0, $buffer.Length)
+                        }
+                    }
+                    # Gestion générique des fichiers statiques (HTML, JS, CSS, etc.)
+                    else {
+                        $requestedPath = $request.Url.AbsolutePath -replace '^/', '' # Enlève le premier '/'
+                        # Si la requête est pour la racine, servir index.html
+                        if ([string]::IsNullOrWhiteSpace($requestedPath)) {
+                            $filePath = Join-Path $WebFilesRoot "index.html"
+                        } else {
+                            $filePath = Join-Path $WebFilesRoot $requestedPath
+                        }
+
+                        if (Test-Path $filePath -PathType Leaf) {
+                            $fileExtension = [System.IO.Path]::GetExtension($filePath).ToLowerInvariant()
+                            # Définir le Content-Type basé sur l'extension
+                            switch ($fileExtension) {
+                                ".html" { $contentType = 'text/html' }
+                                ".js"   { $contentType = 'application/javascript' }
+                                ".css"  { $contentType = 'text/css' }
+                                ".json" { $contentType = 'application/json' }
+                                ".png"  { $contentType = 'image/png' }
+                                ".jpg"  { $contentType = 'image/jpeg' }
+                                ".jpeg" { $contentType = 'image/jpeg' }
+                                ".gif"  { $contentType = 'image/gif' }
+                                ".ico"  { $contentType = 'image/x-icon' } # Ajout pour les favicons
+                                default { $contentType = 'application/octet-stream' } # Type générique
+                            }
+                            Write-Host "[$(Get-Date -Format 'HH:mm:ss')] [SERVEUR] Servir le fichier statique: $filePath (Type: $contentType) de $clientIP" -ForegroundColor Green
+                            Write-Log "[SERVEUR] Servir fichier statique : $filePath"
+
+                            try {
+                                # Lire le fichier en tant que bytes pour éviter les problèmes d'encodage de chaîne
+                                $fileBytes = [System.IO.File]::ReadAllBytes($filePath)
+                                $response.StatusCode = 200
+                                $response.ContentType = $contentType
+                                $response.ContentLength64 = $fileBytes.Length
+                                $response.OutputStream.Write($fileBytes, 0, $fileBytes.Length)
+                            } catch {
+                                Write-Error "[$(Get-Date -Format 'HH:mm:ss')] [SERVEUR] ERREUR lors de la lecture du fichier $filePath : $($_.Exception.Message)" -ForegroundColor Red
+                                Write-Log "[SERVEUR] Erreur lecture fichier : $filePath - $($_.Exception.Message)"
+                                $response.StatusCode = 500
+                                $response.ContentType = 'text/plain'
+                                $responseString = "Erreur serveur lors de la lecture du fichier."
+                                $buffer = [System.Text.Encoding]::UTF8.GetBytes($responseString)
+                                $response.ContentLength64 = $buffer.Length
+                                $response.OutputStream.Write($buffer, 0, $buffer.Length)
+                            }
+                        } else {
+                            # Route non trouvée ou fichier non existant
+                            Write-Warning "[$(Get-Date -Format 'HH:mm:ss')] [SERVEUR] Route non gérée ou fichier non trouvé: $($request.HttpMethod) $($request.Url.AbsolutePath) de $clientIP"
+                            Write-Log "[SERVEUR] Route non trouvée : $($request.Url.AbsolutePath)"
+                            $response.StatusCode = 404 # Not Found
+                            $response.ContentType = 'text/plain'
+                            $responseString = "Contenu non trouvé."
+                            $buffer = [System.Text.Encoding]::UTF8.GetBytes($responseString)
+                            $response.ContentLength64 = $buffer.Length
+                            $response.OutputStream.Write($buffer, 0, $buffer.Length)
+                        }
+                    }
+                    $response.OutputStream.Close()
+                }
+            }
+            catch [System.Net.HttpListenerException] {
+                Write-Error "Erreur HttpListener : $($_.Exception.Message)."
+                Write-Error "Cela est souvent dû à un manque de privilèges. Assurez-vous d'exécuter PowerShell en tant qu'administrateur."
+                Write-Error "Si l'erreur persiste, configurez une ACL pour le port (une seule fois) : netsh http add urlacl url=http://*:$WebServerPort/ user=Everyone"
+                Write-Log "[SERVEUR] Erreur HttpListener : $($_.Exception.Message)"
+            }
+            catch {
+                Write-Error "Une erreur inattendue est survenue dans le serveur : $($_.Exception.Message)"
+                Write-Log "[SERVEUR] Erreur inattendue : $($_.Exception.Message)"
+            }
+            finally {
+                if ($listener.IsListening) {
+                    Write-Host "[SERVEUR] Arrêt du serveur HTTP." -ForegroundColor Red
+                    Write-Log "[SERVEUR] Arrêt."
+                    $listener.Stop()
+                    $listener.Close()
+                }
+                # Ne pas appeler Show-Menu ici. Le script principal reprendra le contrôle.
             }
         }
 
