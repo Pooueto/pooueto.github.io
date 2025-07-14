@@ -6,7 +6,7 @@
 #  ╚██████╔╝██║     ██████╔╝██║  ██║   ██║   ███████╗██║  ██║
 #   ╚═════╝ ╚═╝     ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚══════╝╚═╝  ╚═╝
 
-$LocalVersion = "5.0.0"
+$LocalVersion = "5.1.0"
 
 $RemoteScriptUrl = "https://raw.githubusercontent.com/Pooueto/pooueto.github.io/refs/heads/main/BetterAlldebrid.ps1"
 
@@ -1762,6 +1762,7 @@ $Aria2cPath = "aria2c.exe"                     # Chemin vers aria2c.exe (si non 
 $MaxConnectionsPerServer = 16                  # Nombre maximum de connexions par serveur pour aria2c (multi-threading)
 $SplitDownloads = 50                          # Nombre de splits (segments) pour le téléchargement (multi-threading)
 
+
 function Start-Aria2cDownload {
     param (
         [string]$DirectLink,
@@ -1785,8 +1786,7 @@ function Start-Aria2cDownload {
         "--auto-file-renaming=false",
         "--file-allocation=none",
         "--continue=true",
-        "--console-log-level=warn", # Réduit le bruit de la console
-        #"--log=$LogFile",           # Enregistre le log dans un fichier
+        "--console-log-level=debug",
         $DirectLink
     )
 
@@ -2154,7 +2154,36 @@ function Show-Menu {
             }
         }
 
+# ██╗      ██████╗  ██████╗ █████╗ ██╗     ██╗  ██╗ ██████╗ ███████╗████████╗
+# ██║     ██╔═══██╗██╔════╝██╔══██╗██║     ██║  ██║██╔═══██╗██╔════╝╚══██╔══╝
+# ██║     ██║   ██║██║     ███████║██║     ███████║██║   ██║███████╗   ██║
+# ██║     ██║   ██║██║     ██╔══██║██║     ██╔══██║██║   ██║╚════██║   ██║
+# ███████╗╚██████╔╝╚██████╗██║  ██║███████╗██║  ██║╚██████╔╝███████║   ██║
+# ╚══════╝ ╚═════╝  ╚═════╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝   ╚═╝
+
         "11" {
+            # --- Détermination robuste du chemin racine du script ---
+            # Cette logique assure que $scriptPath est toujours valide, même si $MyInvocation.MyCommand.Path est null.
+            $scriptPath = $PSScriptRoot
+            if (-not $scriptPath) {
+                # Fallback pour les scénarios où $PSScriptRoot n'est pas défini (ex: exécution via F8 dans ISE)
+                $scriptPath = Split-Path -Parent -Path $MyInvocation.MyCommand.Definition
+            }
+            if (-not $scriptPath) {
+                # Dernier recours si même $MyInvocation.MyCommand.Definition est problématique
+                $scriptPath = (Get-Location).Path
+            }
+
+            # --- VÉRIFICATION DES PRIVILÈGES ADMINISTRATEUR ---
+            if (-not ([Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))) {
+                Write-Warning "[ADMIN REQUIRED] Le mode serveur nécessite des privilèges administrateur."
+                Write-Host "[ADMIN REQUIRED] Le script va se fermer maintenant." -ForegroundColor Red
+                Pause
+                exit
+            }
+            Write-Host "[ADMIN CHECK] Exécution en mode administrateur détectée. Poursuite du démarrage du serveur." -ForegroundColor DarkGreen
+            Write-Log "[ADMIN CHECK] Privilèges administrateur OK."
+
             # --- Configuration du Serveur ---
             # Utilisation des variables globales de BetterAlldebrid.ps1 déjà définies
             $AllDebridApiKey = $predefinedApiKey # Réutilise la clé API globale du script
@@ -2196,7 +2225,7 @@ function Show-Menu {
 
             # --- Configuration du téléchargement des fichiers web depuis GitHub ---
             $GitHubWebContentBaseUrl = "https://raw.githubusercontent.com/Pooueto/BetterAlldebridServer/main/" # Exemple d'URL de base
-            $WebFilesToDownload = @("index.html", "script.js", "style.css") # Liste des fichiers à télécharger
+            $WebFilesToDownload = @("index.html", "script.js", "style.css", "background.png", "anthem.mp3") # Liste des fichiers à télécharger
 
             Write-Host "`n[INIT] Vérification et téléchargement des fichiers web depuis GitHub..." -ForegroundColor Cyan
             Write-Log "[INIT] Vérification et téléchargement des fichiers web."
@@ -2346,7 +2375,7 @@ function Show-Menu {
                                 # Le scriptblock de Start-Job doit être autonome ou utiliser des variables passées.
                                 # Redéfinir les fonctions nécessaires localement dans le job.
                                 Start-Job -ScriptBlock {
-                                    param($DownloadUrl, $FileName, $DownloadDestFolder, $ClientIP, $LogFilePath)
+                                    param($DownloadUrl, $FileName, $DownloadDestFolder, $ClientIP, $LogFilePath, $Aria2ExecutablePath)
 
                                     # Redéfinir Remove-InvalidFileNameChars localement dans le job
                                     function local:Remove-InvalidFileNameChars {
@@ -2366,19 +2395,48 @@ function Show-Menu {
                                     }
 
                                     $safeFileName = local:Remove-InvalidFileNameChars -Name $FileName
-                                    $outputPath = Join-Path $DownloadDestFolder $safeFileName
+                                    # aria2 handles the output file path, so we don't need to join it here for the command
+                                    # but we will use the folder for aria2's -d parameter
 
-                                    local:Job-Write-Log "Démarrage du téléchargement de '$FileName' pour $ClientIP vers '$outputPath'..."
-                                    Write-Host "[$(Get-Date -Format 'HH:mm:ss')] [Job] Démarrage du téléchargement de '$FileName' pour $ClientIP vers '$outputPath'..." -ForegroundColor Blue
+                                    local:Job-Write-Log "Démarrage du téléchargement de '$FileName' pour $ClientIP vers '$DownloadDestFolder' avec aria2..."
+                                    Write-Host "[$(Get-Date -Format 'HH:mm:ss')] [Job] Démarrage du téléchargement de '$FileName' pour $ClientIP vers '$DownloadDestFolder' avec aria2..." -ForegroundColor Blue
                                     try {
-                                        Invoke-WebRequest -Uri $DownloadUrl -OutFile $outputPath -TimeoutSec 7200
-                                        local:Job-Write-Log "Téléchargement de '$FileName' terminé pour $ClientIP."
-                                        Write-Host "[$(Get-Date -Format 'HH:mm:ss')] [Job] Téléchargement de '$FileName' terminé pour $ClientIP." -ForegroundColor Green
+                                        # Construct the aria2 command
+                                        # -d: directory to save files
+                                        # -o: output filename
+                                        # -c: continue downloading a partially downloaded file
+                                        # --auto-file-renaming=false: disable automatic renaming for existing files
+                                        # --allow-overwrite=true: allow overwriting existing files (consider your use case)
+                                        # --console-log-level=warn: reduce verbose output
+                                        # --log-level=warn: reduce verbose output to file
+                                        # --summary-interval=0: no download summary output
+                                        $aria2Args = @(
+                                            $DownloadUrl,
+                                            '-d', $DownloadDestFolder,
+                                            '-o', $safeFileName,
+                                            '-c',
+                                            '--auto-file-renaming=false', # Important for consistent filenames
+                                            '--allow-overwrite=true',     # Choose based on your preference
+                                            '--console-log-level=warn',
+                                            '--log-level=warn',
+                                            '--summary-interval=5'
+                                        )
+
+                                        # Execute aria2c.exe
+                                        $process = Start-Process -FilePath $Aria2ExecutablePath -ArgumentList $aria2Args -NoNewWindow -PassThru -Wait
+
+                                        if ($process.ExitCode -eq 0) {
+                                            local:Job-Write-Log "Téléchargement de '$FileName' terminé avec succès pour $ClientIP (via aria2)."
+                                            Write-Host "[$(Get-Date -Format 'HH:mm:ss')] [Job] Téléchargement de '$FileName' terminé avec succès pour $ClientIP (via aria2)." -ForegroundColor Green
+                                        } else {
+                                            local:Job-Write-Log "aria2 a terminé avec un code d'erreur $($process.ExitCode) lors du téléchargement de '$FileName' pour $ClientIP."
+                                            Write-Error "[$(Get-Date -Format 'HH:mm:ss')] [Job] aria2 a terminé avec un code d'erreur $($process.ExitCode) lors du téléchargement de '$FileName' pour $ClientIP." -ForegroundColor Red
+                                        }
                                     } catch {
-                                        local:Job-Write-Log "Erreur lors du téléchargement de '$FileName' pour $ClientIP : $($_.Exception.Message)"
-                                        Write-Error "[$(Get-Date -Format 'HH:mm:ss')] [Job] Erreur lors du téléchargement de '$FileName' pour $ClientIP : $($_.Exception.Message)"
+                                        local:Job-Write-Log "Erreur lors de l'exécution d'aria2 pour '$FileName' pour $ClientIP : $($_.Exception.Message)"
+                                        Write-Error "[$(Get-Date -Format 'HH:mm:ss')] [Job] Erreur lors de l'exécution d'aria2 pour '$FileName' pour $ClientIP : $($_.Exception.Message)" -ForegroundColor Red
                                     }
-                                } -ArgumentList $downloadLink, $fileName, $finalDownloadFolder, $clientIP, $script:logFile | Out-Null
+                                } -ArgumentList $downloadLink, $fileName, $finalDownloadFolder, $clientIP, $script:logFile, $Aria2cPath | Out-Null
 
                                 $response.StatusCode = 200 # OK
                                 $response.ContentType = 'application/json'
@@ -2427,7 +2485,8 @@ function Show-Menu {
                                 ".jpg"  { $contentType = 'image/jpeg' }
                                 ".jpeg" { $contentType = 'image/jpeg' }
                                 ".gif"  { $contentType = 'image/gif' }
-                                ".ico"  { $contentType = 'image/x-icon' } # Ajout pour les favicons
+                                ".mp3"  { $contentType = 'audio/mpeg'  }
+                                ".ico"  { $contentType = 'image/x-icon' }
                                 default { $contentType = 'application/octet-stream' } # Type générique
                             }
                             Write-Host "[$(Get-Date -Format 'HH:mm:ss')] [SERVEUR] Servir le fichier statique: $filePath (Type: $contentType) de $clientIP" -ForegroundColor Green
@@ -2482,7 +2541,6 @@ function Show-Menu {
                     $listener.Stop()
                     $listener.Close()
                 }
-                # Ne pas appeler Show-Menu ici. Le script principal reprendra le contrôle.
             }
         }
 
