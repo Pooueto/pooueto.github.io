@@ -6,7 +6,7 @@
 #  ╚██████╔╝██║     ██████╔╝██║  ██║   ██║   ███████╗██║  ██║
 #   ╚═════╝ ╚═╝     ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚══════╝╚═╝  ╚═╝
 
-$LocalVersion = "5.1.0"
+$LocalVersion = "5.1.1"
 
 $RemoteScriptUrl = "https://raw.githubusercontent.com/Pooueto/pooueto.github.io/refs/heads/main/BetterAlldebrid.ps1"
 
@@ -1786,7 +1786,7 @@ function Start-Aria2cDownload {
         "--auto-file-renaming=false",
         "--file-allocation=none",
         "--continue=true",
-        "--console-log-level=debug",
+        "--console-log-level=warn",
         $DirectLink
     )
 
