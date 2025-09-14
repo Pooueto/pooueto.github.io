@@ -6,7 +6,7 @@
 #  ╚██████╔╝██║     ██████╔╝██║  ██║   ██║   ███████╗██║  ██║
 #   ╚═════╝ ╚═╝     ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚══════╝╚═╝  ╚═╝
 
-$LocalVersion = "5.1.1"
+$LocalVersion = "5.1.2"
 
 $RemoteScriptUrl = "https://raw.githubusercontent.com/Pooueto/pooueto.github.io/refs/heads/main/BetterAlldebrid.ps1"
 
@@ -626,6 +626,39 @@ function Get-AlldebridHistory {
     } catch {
         Write-Log "Exception lors de l'appel à l'API pour l'historique: $_"
         Write-Host "Une erreur est survenue lors de la récupération de l'historique." -ForegroundColor Red
+    }
+}
+
+
+function Get-ADPremiumTime {
+    param (
+        [string]$ApiKey = $predefinedApiKey,
+        [string]$Agent = $userAgent
+    )
+
+    $apiUrl = "https://api.alldebrid.com/v4/user?agent=$Agent&apikey=$ApiKey"
+
+    try {
+        $response = Invoke-RestMethod -Uri $apiUrl -Method Get
+        if ($response.status -eq "success") {
+            $user = $response.data.user
+            $expireTimestamp = $user.premiumUntil
+
+            if ($expireTimestamp -gt 0) {
+                $expireDate = [DateTimeOffset]::FromUnixTimeSeconds($expireTimestamp).DateTime
+                Write-Host "Votre compte Premium est actif jusqu'au : $expireDate" -ForegroundColor Green
+
+                $remainingDays = ($expireDate - (Get-Date)).Days
+                Write-Host "Il vous reste $remainingDays jours de Premium." -ForegroundColor Cyan
+            } else {
+                Write-Host "Votre compte n'est pas Premium." -ForegroundColor Yellow
+            }
+        } else {
+            Write-Host "Erreur : $($response.error.message)" -ForegroundColor Red
+        }
+    }
+    catch {
+        Write-Host "Erreur de connexion à l'API AllDebrid : $_" -ForegroundColor Red
     }
 }
 
@@ -2747,6 +2780,10 @@ function Show-Menu {
         }
         "Version" {
             Write-Host $LocalVersion
+        }
+
+        "time"{
+            Get-ADPremiumTime
         }
 
         "Q" {
