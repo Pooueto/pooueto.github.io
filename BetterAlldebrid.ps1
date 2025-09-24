@@ -6,7 +6,7 @@
 #  ╚██████╔╝██║     ██████╔╝██║  ██║   ██║   ███████╗██║  ██║
 #   ╚═════╝ ╚═╝     ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚══════╝╚═╝  ╚═╝
 
-$LocalVersion = "5.1.2"
+$LocalVersion = "6.0"
 
 $RemoteScriptUrl = "https://raw.githubusercontent.com/Pooueto/pooueto.github.io/refs/heads/main/BetterAlldebrid.ps1"
 
@@ -1914,6 +1914,481 @@ function Start-AlldebridAria2cDownload {
 }
 
 
+# ██╗   ██╗██╗██████╗ ███████╗ ██████╗     ███████╗███████╗██████╗ ██╗   ██╗███████╗██████╗
+# ██║   ██║██║██╔══██╗██╔════╝██╔═══██╗    ██╔════╝██╔════╝██╔══██╗██║   ██║██╔════╝██╔══██╗
+# ██║   ██║██║██║  ██║█████╗  ██║   ██║    ███████╗█████╗  ██████╔╝██║   ██║█████╗  ██████╔╝
+# ╚██╗ ██╔╝██║██║  ██║██╔══╝  ██║   ██║    ╚════██║██╔══╝  ██╔══██╗╚██╗ ██╔╝██╔══╝  ██╔══██╗
+#  ╚████╔╝ ██║██████╔╝███████╗╚██████╔╝    ███████║███████╗██║  ██║ ╚████╔╝ ███████╗██║  ██║
+#   ╚═══╝  ╚═╝╚═════╝ ╚══════╝ ╚═════╝     ╚══════╝╚══════╝╚═╝  ╚═╝  ╚═══╝  ╚══════╝╚═╝  ╚═╝
+function VideoServer {
+    # Définir l'adresse IP et le port du serveur
+    $ipAddress = "192.168.1.18" # Remplacez par votre adresse IP
+    $port = 8000
+    $prefix = "http://$ipAddress`:$port/"
+    $folderPath = $script:currentDownloadFolder
+
+    # Vérifier l'existence du dossier
+    if (-not (Test-Path $folderPath -PathType Container)) {
+        Write-Host "Le dossier '$folderPath' n'existe pas. Veuillez le créer ou modifier le chemin."
+        return
+    }
+
+    # Créer une instance de HttpListener
+    $listener = New-Object System.Net.HttpListener
+    $listener.Prefixes.Add($prefix)
+
+    # Démarrer le serveur
+    Write-Host "======================================================"
+    Write-Host "  Dossier de téléchargement actuel: $folderPath"
+    Write-Host "======================================================"
+    Write-Host ""
+    Write-Host "Le serveur web est démarré sur $prefix"
+    $listener.Start()
+
+    # Fonction pour servir une page d'erreur
+    function Serve-ErrorPage {
+        param (
+            [System.Net.HttpListenerResponse]$response,
+            [int]$statusCode,
+            [string]$statusDescription,
+            [string]$message
+        )
+        $response.StatusCode = $statusCode
+        $response.StatusDescription = $statusDescription
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($message)
+        $response.ContentLength64 = $bytes.Length
+        $response.ContentType = "text/html; charset=utf-8"
+        $response.OutputStream.Write($bytes, 0, $bytes.Length)
+    }
+
+    # Fonction principale de gestion des requêtes
+    function Handle-Request {
+        param (
+            [System.Net.HttpListenerContext]$context
+        )
+
+        $request = $context.Request
+        $response = $context.Response
+        Write-Host "Requête reçue pour l'URL : $($request.Url)"
+
+        # Gérer la page d'accueil ou les fichiers
+        try {
+            # Gérer la page d'accueil
+            if ($request.Url.LocalPath -eq "/") {
+                Write-Host "Génération de la page d'accueil..."
+
+                $videos = Get-ChildItem -Path "$folderPath\*" -Include "*.mp4","*.mkv"
+
+                $htmlContent = @"
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PowerStream - Local Video Server</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;700&family=Poppins:wght@300;400;600&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/icon?family=Material+Symbols+Outlined" rel="stylesheet" />
+    <link href="https://vjs.zencdn.net/8.5.2/video-js.css" rel="stylesheet" />
+    <style>
+        :root {
+            --primary-color: #64b5f6;
+            --secondary-color: #ffb74d;
+            --background-dark: #1a1a2e;
+            --surface-dark: #2c2b4d;
+            --text-light: #e0e0e0;
+            --text-muted: #b0b0b0;
+            --link-hover: #ffffff;
+            --border-radius: 12px;
+            --transition-speed: 0.3s;
+        }
+
+        body {
+            font-family: 'Poppins', sans-serif;
+            background-color: var(--background-dark);
+            color: var(--text-light);
+            margin: 0;
+            padding: 0;
+            display: grid;
+            place-items: center;
+            min-height: 100vh;
+        }
+
+        .app-container {
+            display: grid;
+            grid-template-columns: 1fr 2fr;
+            gap: 30px;
+            padding: 40px;
+            max-width: 1400px;
+            width: 100%;
+            margin-top: 20px;
+            box-sizing: border-box;
+        }
+
+        header {
+            grid-column: 1 / -1;
+            background-color: var(--surface-dark);
+            padding: 20px 40px;
+            border-radius: var(--border-radius);
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+            margin-bottom: 20px;
+
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        h1 {
+            font-family: 'Montserrat', sans-serif;
+            color: var(--primary-color);
+            margin: 0;
+            font-size: 2.5em;
+        }
+
+        .header-content {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .header-gif {
+            width: 80px;
+            height: auto;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.5);
+        }
+
+        h2 {
+            font-family: 'Montserrat', sans-serif;
+            color: var(--secondary-color);
+            border-left: 4px solid var(--secondary-color);
+            padding-left: 15px;
+            margin-top: 0;
+            margin-bottom: 20px;
+            font-size: 1.5em;
+        }
+
+        .video-list-container, .video-player-container {
+            background-color: var(--surface-dark);
+            padding: 30px;
+            border-radius: var(--border-radius);
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+            transition: transform var(--transition-speed) ease-in-out;
+        }
+
+        .video-player-container {
+             border: 2px solid var(--primary-color);
+        }
+
+        ul {
+            list-style-type: none;
+            padding: 0;
+            margin: 0;
+        }
+
+        li {
+            margin: 15px 0;
+            transition: transform var(--transition-speed) ease-in-out, background-color var(--transition-speed);
+            padding: 10px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            cursor: pointer;
+        }
+
+        li:hover {
+            transform: translateX(10px);
+            background-color: rgba(255, 255, 255, 0.05);
+        }
+
+        .file-icon {
+            font-size: 1.8em;
+            margin-right: 15px;
+            color: var(--secondary-color);
+        }
+
+        a {
+            text-decoration: none;
+            color: var(--text-light);
+            font-weight: 400;
+            font-size: 1.1em;
+            transition: color var(--transition-speed) ease-in-out;
+            flex-grow: 1;
+        }
+
+        a:hover {
+            color: var(--primary-color);
+        }
+
+        .aspect-ratio-box {
+            position: relative;
+            width: 100%;
+            padding-top: 56.25%; /* 16:9 Aspect Ratio */
+            background-color: #000;
+            border-radius: 8px;
+        }
+
+        .video-js {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100% !important;
+            height: 100% !important;
+        }
+
+        /* --- Responsive Design --- */
+        @media (max-width: 1024px) {
+            .app-container {
+                grid-template-columns: 1fr;
+                padding: 20px;
+            }
+        }
+
+        @media (max-width: 600px) {
+            h1 {
+                font-size: 2em;
+            }
+            h2 {
+                font-size: 1.2em;
+            }
+            .video-list-container, .video-player-container {
+                padding: 20px;
+            }
+            li {
+                padding: 8px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="app-container">
+        <header>
+            <div class="header-content">
+                <h1>PowerStream</h1>
+                <p style="color: var(--text-muted); font-style: italic;">Serveur de steaming video en local, via Powershell.</p>
+            </div>
+            <img src="https://media1.tenor.com/m/evoSxqcmKCYAAAAd/soviet-cat-sovicat.gif" alt="PowerStream GIF" class="header-gif">
+        </header>
+
+        <section class="video-list-container">
+            <h2><span class="material-symbols-outlined file-icon">movie_filter</span>Liste des vidéos</h2>
+            <ul id="video-list">
+"@
+                foreach ($video in $videos) {
+                    $videoUrl = [System.Web.HttpUtility]::UrlEncode($video.Name)
+                    $displayName = $video.Name
+
+                    $icon = "movie"
+                    if ($displayName.EndsWith(".mkv")) {
+                        $icon = "movie_edit"
+                    }
+
+                    $displayName = $displayName -replace '\s\d{3,4}p.*', '' `
+                                                -replace '\b(x264|x265|HEVC|AAC|AC3|DTS|MULTI|FRENCH|TRUEFRENCH|VF|VOSTFR|BRRip|BluRay|HD|HDRip|WEB-DL|WEBRip|FHD|FRENCH|VF2|VFF|VO|VOSTF|VOSTFR|SubPack|xvid|vostfr|1080p|720p|4k|HDR)\b', '' `
+                                                -replace '(\.mkv|\.mp4)', '' `
+                                                -replace '[._]', ' ' `
+                                                -replace '\s\s', ' ' | `
+                                                ForEach-Object { $_.Trim() }
+
+                    $htmlContent += "
+                <li>
+                    <span class=`"material-symbols-outlined file-icon`">$icon</span>
+                    <a href=`"/stream?file=$videoUrl`" data-filename=`"$($video.Name)`">$displayName</a>
+                </li>`n"
+                }
+
+                $htmlContent += @"
+            </ul>
+        </section>
+
+        <section class="video-player-container">
+            <h2><span class="material-symbols-outlined file-icon">play_circle</span>Lecteur vidéo</h2>
+            <div class="aspect-ratio-box">
+                <video id="my-video" class="video-js vjs-default-skin" controls preload="auto" data-setup="{}">
+                    <p class="vjs-no-js">
+                        Pour voir cette vidéo, veuillez activer JavaScript, et envisager
+                        de mettre à jour un navigateur qui
+                        <a href="https://videojs.com/html5-video-support/" target="_blank">
+                            prend en charge la vidéo HTML5
+                        </a>
+                    </p>
+                </video>
+            </div>
+        </section>
+    </div>
+
+    <script src="https://vjs.zencdn.net/8.5.2/video.js"></script>
+    <script>
+        document.querySelectorAll('#video-list a').forEach(link => {
+            link.addEventListener('click', (event) => {
+                event.preventDefault();
+                const videoUrl = event.target.href;
+                const player = videojs('my-video');
+                const originalFilename = event.target.dataset.filename;
+
+                let fileType = 'video/mp4';
+                if (originalFilename.endsWith('.mkv')) {
+                    fileType = 'video/webm';
+                }
+
+                player.src({
+                    src: videoUrl,
+                    type: fileType
+                });
+                player.play();
+            });
+        });
+    </script>
+</body>
+</html>
+"@
+                $bytes = [System.Text.Encoding]::UTF8.GetBytes($htmlContent)
+                $response.ContentLength64 = $bytes.Length
+                $response.ContentType = "text/html; charset=utf-8"
+                $response.OutputStream.Write($bytes, 0, $bytes.Length)
+                return
+            }
+
+            # Gérer les requêtes de streaming
+            if ($request.Url.LocalPath -eq "/stream") {
+                $fileName = [System.Web.HttpUtility]::UrlDecode($request.QueryString.Get("file"))
+                if (-not $fileName) {
+                    Serve-ErrorPage $response 400 "Bad Request" "Nom de fichier manquant."
+                    return
+                }
+
+                $filePath = Join-Path -Path $folderPath -ChildPath $fileName
+                Write-Host "Chemin de fichier demandé : $filePath"
+
+                if (-not ($filePath.StartsWith($folderPath))) {
+                    Write-Host "Tentative d'accès à un chemin non autorisé : $fileName"
+                    Serve-ErrorPage $response 403 "Forbidden" "Accès interdit."
+                    return
+                }
+
+                if (Test-Path $filePath) {
+                    Write-Host "Vérification du codec audio du fichier..."
+                    $processInfo = New-Object System.Diagnostics.ProcessStartInfo
+                    $processInfo.FileName = "ffprobe.exe"
+                    $processInfo.Arguments = "-v error -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 `"$filePath`""
+                    $processInfo.RedirectStandardOutput = $true
+                    $processInfo.UseShellExecute = $false
+                    $processInfo.CreateNoWindow = $true
+
+                    $process = [System.Diagnostics.Process]::Start($processInfo)
+                    $audioCodec = $process.StandardOutput.ReadToEnd().Trim()
+                    $process.WaitForExit()
+
+                    $isUnsupportedAudio = ($audioCodec -eq "dts") -or ($audioCodec -eq "ac3")
+
+                    if ($isUnsupportedAudio) {
+                        Write-Host "Audio non compatible ($audioCodec) détecté. Lancement de FFmpeg pour transcoder en AAC..."
+
+                        $response.ContentType = "video/webm"
+                        $response.AddHeader("Accept-Ranges", "bytes")
+
+                        $ffmpegProcess = New-Object System.Diagnostics.Process
+                        $ffmpegProcess.StartInfo.FileName = "ffmpeg.exe"
+                        $ffmpegProcess.StartInfo.Arguments = "-i `"$filePath`" -c:v copy -c:a aac -f matroska -movflags frag_keyframe+empty_moov pipe:1"
+                        $ffmpegProcess.StartInfo.UseShellExecute = $false
+                        $ffmpegProcess.StartInfo.RedirectStandardOutput = $true
+                        $ffmpegProcess.StartInfo.RedirectStandardError = $false
+                        $ffmpegProcess.StartInfo.CreateNoWindow = $true
+
+                        $ffmpegProcess.Start()
+
+                        Write-Host "Envoi du flux transcoder..."
+                        $bufferSize = 4096
+                        $buffer = New-Object byte[] $bufferSize
+
+                        try {
+                            while ($true) {
+                                $bytesRead = $ffmpegProcess.StandardOutput.BaseStream.Read($buffer, 0, $buffer.Length)
+                                if ($bytesRead -eq 0) { break }
+                                $response.OutputStream.Write($buffer, 0, $bytesRead)
+                            }
+                        } catch {
+                            Write-Host "Erreur lors de l'envoi du flux transcoder : $_"
+                        } finally {
+                            if (-not $ffmpegProcess.HasExited) {
+                                $ffmpegProcess.Kill()
+                            }
+                            $ffmpegProcess.Dispose()
+                        }
+                    } else {
+                        Write-Host "Fichier déjà compatible, envoi direct..."
+
+                        if ($filePath.EndsWith(".mp4")) {
+                            $response.ContentType = "video/mp4"
+                        } elseif ($filePath.EndsWith(".mkv")) {
+                            $response.ContentType = "video/webm"
+                        }
+
+                        $response.AddHeader("Accept-Ranges", "bytes")
+                        $fileInfo = Get-Item $filePath
+                        $fileLength = $fileInfo.Length
+                        $startByte = 0
+                        $endByte = $fileLength - 1
+
+                        $rangeHeader = $request.Headers["Range"]
+                        if ($rangeHeader) {
+                            $rangeValue = $rangeHeader.Replace("bytes=", "").Split('-')
+                            $startByte = [long]::Parse($rangeValue[0])
+                            if ($rangeValue.Length -gt 1 -and $rangeValue[1]) {
+                                $endByte = [long]::Parse($rangeValue[1])
+                            }
+                            $response.StatusCode = 206
+                            $response.Headers.Add("Content-Range", "bytes $startByte-$endByte/$fileLength")
+                            $response.ContentLength64 = ($endByte - $startByte) + 1
+                        } else {
+                            $response.ContentLength64 = $fileLength
+                        }
+
+                        $fileStream = New-Object System.IO.FileStream($filePath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read)
+                        $fileStream.Seek($startByte, [System.IO.SeekOrigin]::Begin)
+
+                        $bufferSize = 4096
+                        $buffer = New-Object byte[] $bufferSize
+                        $bytesLeft = ($endByte - $startByte) + 1
+
+                        try {
+                            while ($bytesLeft -gt 0) {
+                                $bytesToRead = [System.Math]::Min($bufferSize, $bytesLeft)
+                                $bytesRead = $fileStream.Read($buffer, 0, $bytesToRead)
+                                if ($bytesRead -eq 0) { break }
+                                $response.OutputStream.Write($buffer, 0, $bytesRead)
+                                $bytesLeft -= $bytesRead
+                            }
+                        } catch {
+                            Write-Host "Erreur lors de l'envoi du fichier : $_"
+                        } finally {
+                            $fileStream.Close()
+                        }
+                    }
+                } else {
+                    Write-Host "Fichier non trouvé (404) : $filePath"
+                    Serve-ErrorPage $response 404 "Not Found" "Fichier non trouvé."
+                }
+                return
+            }
+
+            Write-Host "Ressource non trouvée (404) : $($request.Url.LocalPath)"
+            Serve-ErrorPage $response 404 "Not Found" "Ressource non trouvée."
+
+        } catch {
+            Write-Host "Une erreur est survenue lors du traitement de la requête : $_"
+            Serve-ErrorPage $response 500 "Internal Server Error" "Erreur interne du serveur."
+        }
+    }
+
+    while ($listener.IsListening) {
+        $context = $listener.GetContext()
+        Handle-Request $context
+        $context.Response.Close()
+    }
+
+    $listener.Stop()
+}
+
 #  ███████╗ █████╗ ███████╗████████╗███████╗██████╗     ███████╗ ██████╗  ██████╗ ███████╗
 #  ██╔════╝██╔══██╗██╔════╝╚══██╔══╝██╔════╝██╔══██╗    ██╔════╝██╔════╝ ██╔════╝ ██╔════╝
 #  █████╗  ███████║███████╗   ██║   █████╗  ██████╔╝    █████╗  ██║  ███╗██║  ███╗███████╗
@@ -2066,12 +2541,13 @@ function Show-Menu {
     Write-Host "9. Speedtest"
     Write-Host "10. Télécharger avec aria2 (un peu PT, mais c'est rapide t'inquite 👀)"
     Write-Host "11. Server Mode"
+    Write-Host "12. Video Server Mode"
     Write-Host "Q. Quitter"
     Write-Host "========================================================================================================================"
     Write-Centered "Dossier de téléchargement actuel: $script:currentDownloadFolder" -ForegroundColor Yellow
     Write-Host "========================================================================================================================"
 
-    $choice = Read-Host "Choisissez une option (1-11 Or Q)"
+    $choice = Read-Host "Choisissez une option (1-12 Or Q)"
 
     switch ($choice) {
         "1" {
@@ -2576,6 +3052,11 @@ function Show-Menu {
                 }
             }
         }
+
+        "12" {
+            VideoServer
+        }
+
 
         "blyat" {
         Write-Host "☭ Gloire à la mère patrie !" -ForegroundColor Red
