@@ -6,7 +6,7 @@
 #  ╚██████╔╝██║     ██████╔╝██║  ██║   ██║   ███████╗██║  ██║
 #   ╚═════╝ ╚═╝     ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚══════╝╚═╝  ╚═╝
 
-$LocalVersion = "6.0"
+$LocalVersion = "7.0"
 
 $RemoteScriptUrl = "https://raw.githubusercontent.com/Pooueto/pooueto.github.io/refs/heads/main/BetterAlldebrid.ps1"
 
@@ -1793,7 +1793,7 @@ function Wait-ForTorrentCompletion {
 #
 $Aria2cPath = "aria2c.exe"                     # Chemin vers aria2c.exe (si non dans le PATH, mettez le chemin complet)
 $MaxConnectionsPerServer = 16                  # Nombre maximum de connexions par serveur pour aria2c (multi-threading)
-$SplitDownloads = 50                          # Nombre de splits (segments) pour le téléchargement (multi-threading)
+$SplitDownloads = 20                          # Nombre de splits (segments) pour le téléchargement (multi-threading)
 
 
 function Start-Aria2cDownload {
@@ -2389,6 +2389,124 @@ function VideoServer {
     $listener.Stop()
 }
 
+
+#  ███████╗███████╗███╗   ███╗██████╗ ███████╗ ██████╗
+#  ██╔════╝██╔════╝████╗ ████║██╔══██╗██╔════╝██╔════╝
+#  █████╗  █████╗  ██╔████╔██║██████╔╝█████╗  ██║  ███╗
+#  ██╔══╝  ██╔══╝  ██║╚██╔╝██║██╔═══╝ ██╔══╝  ██║   ██║
+#  ██║     ██║     ██║ ╚═╝ ██║██║     ███████╗╚██████╔╝
+#  ╚═╝     ╚═╝     ╚═╝     ╚═╝╚═╝     ╚══════╝ ╚═════╝
+
+function Start-VideoConversion {
+    # 1. Définition des chemins
+    $scriptPath = $PSScriptRoot
+    if (-not $scriptPath) { $scriptPath = Split-Path -Parent -Path $MyInvocation.MyCommand.Definition }
+
+    # On cherche d'abord dans le dossier du script (prioritaire pour la portabilité)
+    $localFfmpeg = Join-Path $scriptPath "ffmpeg.exe"
+    $ffmpegPath = $null
+
+    if (Test-Path $localFfmpeg) {
+        $ffmpegPath = $localFfmpeg
+        Write-Log "FFmpeg détecté localement : $ffmpegPath" -NoConsole
+    }
+    # Sinon on regarde si installé dans Windows (PATH)
+    elseif (Get-Command "ffmpeg.exe" -ErrorAction SilentlyContinue) {
+        $ffmpegPath = "ffmpeg.exe"
+        Write-Log "FFmpeg détecté dans le PATH Windows." -NoConsole
+    }
+
+    # 2. Installation automatique si introuvable
+    if (-not $ffmpegPath) {
+        Write-Host "`n⚠️  FFmpeg est introuvable." -ForegroundColor Yellow
+        $installChoice = Read-Host "Voulez-vous le télécharger et l'installer automatiquement maintenant ? (O/N)"
+
+        if ($installChoice -eq "O" -or $installChoice -eq "o") {
+            try {
+                Write-Host "Téléchargement de FFmpeg (version essentials)... Patientez..." -ForegroundColor Cyan
+
+                # URL de la build officielle légère pour Windows (Gyan.dev)
+                $zipUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+                $zipPath = "$env:TEMP\ffmpeg_temp.zip"
+                $extractPath = "$env:TEMP\ffmpeg_extract"
+
+                # Téléchargement
+                Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath -UseBasicParsing
+
+                Write-Host "Extraction des fichiers..." -ForegroundColor Cyan
+                # Extraction
+                Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
+
+                # Recherche du .exe dans les sous-dossiers (car le zip contient un dossier versionné)
+                $downloadedBinary = Get-ChildItem -Path $extractPath -Recurse -Filter "ffmpeg.exe" | Select-Object -First 1
+
+                if ($downloadedBinary) {
+                    Move-Item -Path $downloadedBinary.FullName -Destination $localFfmpeg -Force
+                    Write-Host "✅ FFmpeg installé avec succès dans : $localFfmpeg" -ForegroundColor Green
+                    $ffmpegPath = $localFfmpeg
+                } else {
+                    Write-Host "❌ Erreur : Impossible de trouver ffmpeg.exe dans l'archive téléchargée." -ForegroundColor Red
+                    return
+                }
+
+                # Nettoyage
+                Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+                Remove-Item $extractPath -Recurse -Force -ErrorAction SilentlyContinue
+
+            } catch {
+                Write-Host "❌ Erreur lors du téléchargement/installation : $_" -ForegroundColor Red
+                return
+            }
+        } else {
+            Write-Host "Annulation. FFmpeg est requis pour cette fonction." -ForegroundColor Red
+            return
+        }
+    }
+
+    # 3. Sélection du fichier et Conversion (Code original)
+    Add-Type -AssemblyName System.Windows.Forms
+    $openFileDialog = New-Object System.Windows.Forms.OpenFileDialog
+    $openFileDialog.Title = "Sélectionnez la vidéo à convertir"
+    $openFileDialog.InitialDirectory = $script:currentDownloadFolder
+    $openFileDialog.Filter = "Fichiers Vidéo (*.mkv;*.avi;*.mp4;*.mov;*.flv;*.wmv;*.webm)|*.mkv;*.avi;*.mp4;*.mov;*.flv;*.wmv;*.webm|Tous les fichiers (*.*)|*.*"
+
+    if ($openFileDialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+        $inputFile = $openFileDialog.FileName
+        $directory = [System.IO.Path]::GetDirectoryName($inputFile)
+        $filenameNoExt = [System.IO.Path]::GetFileNameWithoutExtension($inputFile)
+
+        # Nom de sortie propre
+        $outputFile = Join-Path $directory "$($filenameNoExt)_compatible.mp4"
+
+        Write-Host "`n========================================================" -ForegroundColor Cyan
+        Write-Host " Conversion Vidéo (Compatibilité H.264/AAC)"
+        Write-Host "========================================================"
+        Write-Host "Source : $inputFile"
+        Write-Host "Cible  : $outputFile" -ForegroundColor Green
+        Write-Host "--------------------------------------------------------"
+        Write-Host "Encodage en cours... Ne fermez pas la fenêtre." -ForegroundColor Yellow
+
+        # Commande optimisée
+        $arguments = "-i `"$inputFile`" -c:v libx264 -preset fast -crf 23 -c:a aac -b:a 192k -movflags +faststart `"$outputFile`""
+
+        try {
+            $process = Start-Process -FilePath $ffmpegPath -ArgumentList $arguments -Wait -NoNewWindow -PassThru
+
+            if ($process.ExitCode -eq 0 -and (Test-Path $outputFile)) {
+                Write-Host "`n✅ Conversion terminée avec succès !" -ForegroundColor Green
+                [System.Windows.Forms.MessageBox]::Show("Conversion terminée !`nFichier : $outputFile", "Succès", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+            } else {
+                Write-Host "`n❌ Erreur : La conversion a échoué." -ForegroundColor Red
+            }
+        } catch {
+            Write-Error "Erreur critique : $_"
+        }
+    } else {
+        Write-Host "Annulé par l'utilisateur." -ForegroundColor Yellow
+    }
+}
+
+
 #  ███████╗ █████╗ ███████╗████████╗███████╗██████╗     ███████╗ ██████╗  ██████╗ ███████╗
 #  ██╔════╝██╔══██╗██╔════╝╚══██╔══╝██╔════╝██╔══██╗    ██╔════╝██╔════╝ ██╔════╝ ██╔════╝
 #  █████╗  ███████║███████╗   ██║   █████╗  ██████╔╝    █████╗  ██║  ███╗██║  ███╗███████╗
@@ -2542,6 +2660,7 @@ function Show-Menu {
     Write-Host "10. Télécharger avec aria2 (un peu PT, mais c'est rapide t'inquite 👀)"
     Write-Host "11. Server Mode"
     Write-Host "12. Video Server Mode"
+    Write-Host "13. Convertir une vidéo en MP4 (Pour les vieux PC)"
     Write-Host "Q. Quitter"
     Write-Host "========================================================================================================================"
     Write-Centered "Dossier de téléchargement actuel: $script:currentDownloadFolder" -ForegroundColor Yellow
@@ -3055,6 +3174,12 @@ function Show-Menu {
 
         "12" {
             VideoServer
+        }
+
+        "13" {
+            Start-VideoConversion
+            Pause
+            Show-Menu
         }
 
 
