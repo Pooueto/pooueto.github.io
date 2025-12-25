@@ -2666,7 +2666,7 @@ function Show-Menu {
     Write-Centered "Dossier de téléchargement actuel: $script:currentDownloadFolder" -ForegroundColor Yellow
     Write-Host "========================================================================================================================"
 
-    $choice = Read-Host "Choisissez une option (1-12 Or Q)"
+    $choice = Read-Host "Choisissez une option (1-13 Or Q)"
 
     switch ($choice) {
         "1" {
@@ -3417,3 +3417,4 @@ Initialize-Config
 
 # Lancement du menu principal
 Show-Menu
+
