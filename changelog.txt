@@ -1,0 +1,19 @@
+MISE A JOUR MAJEURE : LA REFONTE INTEGRALE
+
+	» INTERFACE & ERGONOMIE
+- Refonte complète du menu principal pour une navigation plus claire et intuitive.
+
+	» TELECHARGEMENTS (Aria2 - Option 4)
+- Refonte totale du moteur de téléchargement, car celui de powershell PUE LA MERDE.
+- Autonomie : Aria2 se télécharge et s'installe tout seul s'il n'est pas détecté sur le PC.
+- Optimisation de l'extrême : Intégration du multithreading, multicore, multi-connexion et multi-runspace. Les téléchargements sont maintenant poussés au maximum de ce qui est possible. 10 DL a la fois, chacuns repartis sur 16 connetions au serveur alldebrid en meme temps !
+
+	» STREAMING (VLC)
+- Amélioration majeure du mode streaming.
+- Support multi-liens : Possibilité d'envoyer plusieurs liens à la fois pour générer automatiquement une playlist dans VLC.
+
+	» NOUVELLES FONCTIONNALITES
+- Extraction automatique : Nouveau système qui gère l'auto-extraction de vos fichiers .zip et .rar à la fin du téléchargement (via 7-zip).
+- Host Checker : Ajout d'un système de vérification en direct de l'état des hébergeurs (Host UP/DOWN) pour éviter les erreurs dans le vide.
+
+	» Niveau vitesse de téléchargement et optimisation VLC, le script est poussé dans la limite de mes competences, celle de l'IA, et ce qui est faisable en powershell.
