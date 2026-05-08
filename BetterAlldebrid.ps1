@@ -5,47 +5,22 @@
 #  ╚██████╔╝██║     ██████╔╝██║  ██║   ██║   ███████╗██║  ██║
 #   ╚═════╝ ╚═╝     ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚══════╝╚═╝  ╚═╝
 
-$LocalVersion = "8.0"
+$LocalVersion = "8.1"
 
 $RemoteScriptUrl = "https://raw.githubusercontent.com/Pooueto/pooueto.github.io/refs/heads/main/BetterAlldebrid.ps1"
-# Ajoutez l'URL de votre fichier changelog ici
-$RemoteChangelogUrl = "https://raw.githubusercontent.com/Pooueto/pooueto.github.io/refs/heads/main/changelog.txt"
 
 try {
     $RemoteScript = Invoke-WebRequest -Uri $RemoteScriptUrl -UseBasicParsing
-
     if ($RemoteScript.StatusCode -eq 200) {
         if ($RemoteScript.Content -match '\$LocalVersion\s*=\s*\"([^\"]+)\"') {
             $RemoteVersion = $matches[1]
-
             if ([version]$RemoteVersion -gt [version]$LocalVersion) {
-                Write-Host "Nouvelle version disponible ($RemoteVersion) !" -ForegroundColor Green
-
-                # 1. Récupération et affichage du Changelog
-                try {
-                    $Changelog = Invoke-WebRequest -Uri $RemoteChangelogUrl -UseBasicParsing
-                    if ($Changelog.StatusCode -eq 200) {
-                        Write-Centered "`n=== NOUVEAUTÉS (CHANGELOG) ===" -ForegroundColor Cyan
-                        Write-Host $Changelog.Content
-                        Write-Centered "==============================`n" -ForegroundColor Cyan
-                    }
-                } catch {
-                    Write-Warning "Impossible de récupérer le changelog distant."
-                }
-
-                # 2. Blocage pour forcer la lecture (10 secondes)
+                Write-Host "Nouvelle version disponible ($RemoteVersion), mise à jour en cours..."
+                Write-Centered "https://raw.githubusercontent.com/Pooueto/pooueto.github.io/refs/heads/main/changelog.txt" -ForegroundColor Red
                 Write-Host "Ehhhh Ohhhh, je me suis pas cassé le cul a codé un changelog pour qu'il soit pas lu x)" -ForegroundColor Yellow
-                for ($i = 10; $i -gt 0; $i--) {
-                    Write-Host "$i... " -NoNewline
-                    Start-Sleep -Seconds 1
-                }
-                Write-Host "`n`nMise à jour en cours..." -ForegroundColor Green
-
-                # 3. Procédure de mise à jour standard
                 Copy-Item -Path $MyInvocation.MyCommand.Definition -Destination "$env:TEMP\BetterAlldebridFriendAPI_backup.ps1"
                 $RemoteScript.Content | Out-File -Encoding UTF8 -FilePath $MyInvocation.MyCommand.Definition -Force
-
-                Write-Host "Mise à jour terminée. Relance du script..."
+                Write-Host "Mise à jour terminée. Relance le script..."
                 Start-Process -FilePath "powershell" -ArgumentList "-ExecutionPolicy Bypass -File `"$($MyInvocation.MyCommand.Definition)`"" -WindowStyle Hidden
                 exit
             }
@@ -54,6 +29,7 @@ try {
 } catch {
     Write-Warning "Impossible de vérifier la version distante : $_"
 }
+
 
 
 #  ██╗      ██████╗  ██████╗ ██╗███╗   ██╗     ██████╗ ██████╗ ███╗   ██╗███████╗██╗ ██████╗
