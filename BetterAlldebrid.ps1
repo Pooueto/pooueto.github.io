@@ -1,4 +1,3 @@
-
 #  ██╗   ██╗██████╗ ██████╗  █████╗ ████████╗███████╗██████╗
 #  ██║   ██║██╔══██╗██╔══██╗██╔══██╗╚══██╔══╝██╔════╝██╔══██╗
 #  ██║   ██║██████╔╝██║  ██║███████║   ██║   █████╗  ██████╔╝
@@ -6,19 +5,46 @@
 #  ╚██████╔╝██║     ██████╔╝██║  ██║   ██║   ███████╗██║  ██║
 #   ╚═════╝ ╚═╝     ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚══════╝╚═╝  ╚═╝
 
-$LocalVersion = "7.0"
+$LocalVersion = "8.0"
 
 $RemoteScriptUrl = "https://raw.githubusercontent.com/Pooueto/pooueto.github.io/refs/heads/main/BetterAlldebrid.ps1"
+# Ajoutez l'URL de votre fichier changelog ici
+$RemoteChangelogUrl = "https://raw.githubusercontent.com/Pooueto/pooueto.github.io/refs/heads/main/changelog.txt"
 
 try {
     $RemoteScript = Invoke-WebRequest -Uri $RemoteScriptUrl -UseBasicParsing
+
     if ($RemoteScript.StatusCode -eq 200) {
         if ($RemoteScript.Content -match '\$LocalVersion\s*=\s*\"([^\"]+)\"') {
             $RemoteVersion = $matches[1]
+
             if ([version]$RemoteVersion -gt [version]$LocalVersion) {
-                Write-Host "Nouvelle version disponible ($RemoteVersion), mise à jour en cours..."
+                Write-Host "Nouvelle version disponible ($RemoteVersion) !" -ForegroundColor Green
+
+                # 1. Récupération et affichage du Changelog
+                try {
+                    $Changelog = Invoke-WebRequest -Uri $RemoteChangelogUrl -UseBasicParsing
+                    if ($Changelog.StatusCode -eq 200) {
+                        Write-Centered "`n=== NOUVEAUTÉS (CHANGELOG) ===" -ForegroundColor Cyan
+                        Write-Host $Changelog.Content
+                        Write-Centered "==============================`n" -ForegroundColor Cyan
+                    }
+                } catch {
+                    Write-Warning "Impossible de récupérer le changelog distant."
+                }
+
+                # 2. Blocage pour forcer la lecture (10 secondes)
+                Write-Host "Ehhhh Ohhhh, je me suis pas cassé le cul a codé un changelog pour qu'il soit pas lu x)" -ForegroundColor Yellow
+                for ($i = 10; $i -gt 0; $i--) {
+                    Write-Host "$i... " -NoNewline
+                    Start-Sleep -Seconds 1
+                }
+                Write-Host "`n`nMise à jour en cours..." -ForegroundColor Green
+
+                # 3. Procédure de mise à jour standard
                 Copy-Item -Path $MyInvocation.MyCommand.Definition -Destination "$env:TEMP\BetterAlldebridFriendAPI_backup.ps1"
                 $RemoteScript.Content | Out-File -Encoding UTF8 -FilePath $MyInvocation.MyCommand.Definition -Force
+
                 Write-Host "Mise à jour terminée. Relance du script..."
                 Start-Process -FilePath "powershell" -ArgumentList "-ExecutionPolicy Bypass -File `"$($MyInvocation.MyCommand.Definition)`"" -WindowStyle Hidden
                 exit
@@ -53,6 +79,36 @@ $maxRetries = 3
 
 # Nom d'agent pour les requêtes API
 $userAgent = "BetterAlldebrid"
+
+# ── Nouvelle authentification Alldebrid (API v4.1) ────────────────────────────
+# L'ancien paramètre ?apikey= est désormais DÉPRECIÉ (cf. docs.alldebrid.com).
+# Toutes les requêtes authentifiées doivent passer par le header : Authorization: Bearer <apikey>
+$script:ApiHeaders = @{ Authorization = "Bearer $predefinedApiKey" }
+
+function Invoke-AlldebridApi {
+    <#
+    .SYNOPSIS  Wrapper Invoke-RestMethod avec Bearer auth centralisée.
+    .PARAMETER Url          URL complète — sans &apikey= dans le query string
+    .PARAMETER Method       GET (défaut) ou POST
+    .PARAMETER Body         Corps de la requête POST (optionnel)
+    .PARAMETER ContentType  Content-Type pour POST (optionnel)
+    #>
+    param(
+        [string]$Url,
+        [string]$Method      = "Get",
+        [object]$Body        = $null,
+        [string]$ContentType = $null
+    )
+    $irmParams = @{
+        Uri         = $Url
+        Method      = $Method
+        Headers     = $script:ApiHeaders
+        ErrorAction = "Stop"
+    }
+    if ($null -ne $Body)  { $irmParams.Body        = $Body }
+    if ($ContentType)     { $irmParams.ContentType = $ContentType }
+    return Invoke-RestMethod @irmParams
+}
 
 
 #   █████╗ ███████╗███████╗███████╗███╗   ███╗██████╗ ██╗     ██╗███████╗███████╗
@@ -194,6 +250,113 @@ function Select-Folder {
 #  ██║   ██║   ██║   ██║██║     ╚════██║
 #  ╚██████╔╝   ██║   ██║███████╗███████║
 #   ╚═════╝    ╚═╝   ╚═╝╚══════╝╚══════╝
+
+
+# ── Extraction automatique des archives après téléchargement ──────────────
+function Expand-DownloadedArchives {
+    param (
+        [string]$Folder
+    )
+
+    # Trouver 7-Zip
+    $7z = @(
+        "C:\Program Files\7-Zip\7z.exe",
+        "C:\Program Files (x86)\7-Zip\7z.exe"
+    ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+    if (-not $7z) {
+        # Fallback : chercher dans le PATH
+        $found = Get-Command "7z.exe" -ErrorAction SilentlyContinue
+        if ($found) { $7z = $found.Source }
+    }
+
+    # ── Détection des archives à extraire ─────────────────────────────────
+    # Règle multipart RAR : on ne traite QUE le part1 (7z gère les suivants auto)
+    # Supporte les deux conventions : .part1.rar  ET  .part01.rar / .part001.rar
+    $archives = @()
+
+    Get-ChildItem -Path $Folder -File | ForEach-Object {
+        $name = $_.Name
+        $ext  = $_.Extension.ToLower()
+
+        if ($ext -eq ".zip") {
+            $archives += $_
+        }
+        elseif ($ext -eq ".rar") {
+            # Exclure les parts 2, 3, … — on garde seulement le premier
+            # Pattern : NOM.part2.rar, NOM.part02.rar, NOM.part002.rar, etc.
+            if ($name -match '\.part0*[2-9]\d*\.rar$' -or $name -match '\.part[1-9]\d+\.rar$') {
+                # C'est une part > 1, on skip
+                return
+            }
+            $archives += $_
+        }
+    }
+
+    if ($archives.Count -eq 0) {
+        Write-Log "Aucune archive à extraire dans : $Folder"
+        return
+    }
+
+    foreach ($archive in $archives) {
+        $ext         = $archive.Extension.ToLower()
+        $baseName    = [System.IO.Path]::GetFileNameWithoutExtension($archive.FullName)
+        # Pour les multipart : "film.part1" → on vire encore ".part1"
+        $baseName    = $baseName -replace '\.part0*1$', ''
+        $extractPath = Join-Path $Folder $baseName
+
+        Write-Host "`n  Extraction : $($archive.Name)" -ForegroundColor Cyan
+        Write-Log "Extraction : $($archive.Name) → $extractPath"
+
+        if (-not (Test-Path $extractPath)) {
+            New-Item -ItemType Directory -Path $extractPath -Force | Out-Null
+        }
+
+        try {
+            if ($ext -eq ".zip") {
+                # ZIP natif, aucun outil externe requis
+                Expand-Archive -Path $archive.FullName -DestinationPath $extractPath -Force
+                Write-Host "  OK (ZIP) : $baseName" -ForegroundColor Green
+                Write-Log "Extraction ZIP terminée : $extractPath"
+            }
+            elseif ($ext -eq ".rar") {
+                if (-not $7z) {
+                    Write-Host "  ⚠️  7-Zip introuvable — installez-le sur https://www.7-zip.org/" -ForegroundColor Yellow
+                    Write-Log "7-Zip introuvable, extraction RAR ignorée."
+                    continue
+                }
+                # 7z extrait automatiquement tous les parts à partir du .part1.rar
+                $result = & $7z x "$($archive.FullName)" "-o$extractPath" -y 2>&1
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Host "  OK (RAR) : $baseName" -ForegroundColor Green
+                    Write-Log "Extraction RAR terminée : $extractPath"
+                } else {
+                    Write-Host "  ECHEC extraction RAR (code $LASTEXITCODE)" -ForegroundColor Red
+                    Write-Log "Echec extraction RAR : $($archive.Name) (code $LASTEXITCODE)"
+                }
+            }
+
+
+            $confirmation = Read-Host "`Suppression de l'archive'$baseName' ? (Y/N)"
+
+            if ($confirmation -eq 'O' -or $confirmation -eq 'o' -or $confirmation -eq 'y') {
+                # On cible spécifiquement les fichiers liés à cette archive (y compris les multi-parts)
+                Get-ChildItem -Path $Folder -Filter "$baseName*.rar" | Remove-Item -Force
+                Get-ChildItem -Path $Folder -Filter "$baseName*.zip" | Remove-Item -Force
+
+                Write-Host " Suppression OK." -ForegroundColor Red
+                Write-Log "Archives supprimées : $baseName"
+            } else {
+                Write-Host "  Archive conservée." -ForegroundColor Yellow
+                Write-Log "L'utilisateur a choisi de conserver l'archive : $baseName"
+            }
+                    } catch {
+                        Write-Host "  Erreur extraction : $($_.Exception.Message)" -ForegroundColor Red
+                        Write-Log "Exception extraction : $($_.Exception.Message)"
+                    }
+                }
+            }
+
 
 # Fonction utilitaire pour formater la taille des fichiers
 function Format-Size {
@@ -357,6 +520,136 @@ function Write-Centered {
 #  ██║  ██║███████╗███████╗██████╔╝███████╗██████╔╝██║  ██║██║██████╔╝    ╚██████╔╝   ██║   ██║███████╗███████║
 #  ╚═╝  ╚═╝╚══════╝╚══════╝╚═════╝ ╚══════╝╚═════╝ ╚═╝  ╚═╝╚═╝╚═════╝      ╚═════╝    ╚═╝   ╚═╝╚══════╝╚══════╝
 
+function Show-HostsStatus {
+    Clear-Host
+    Write-Host ""
+
+    $banner = @(
+        "  ╔══════════════════════════════════════════════════════════════════════╗",
+        "  ║                  ★  STATUT DES HÔTES ALLDEBRID  ★                    ║",
+        "  ╚══════════════════════════════════════════════════════════════════════╝"
+    )
+    foreach ($line in $banner) { Write-Host $line -ForegroundColor Cyan }
+    Write-Host ""
+    Write-Host "  Interrogation de l'API Alldebrid..." -ForegroundColor DarkGray
+
+    # Endpoint correct : /v4/hosts (pas /v4/hosts/status)
+    $apiUrl = "https://api.alldebrid.com/v4/hosts?agent=$userAgent"
+
+    try {
+        $response = Invoke-AlldebridApi -Url $apiUrl
+
+        if ($response.status -ne "success") {
+            Write-Host "  Erreur API : $($response.error.message)" -ForegroundColor Red
+            return
+        }
+
+        $hostsData = $response.data.hosts
+        if (-not $hostsData) {
+            Write-Host "  Aucune donnée reçue depuis l'API." -ForegroundColor Yellow
+            return
+        }
+
+        # Construction de la liste d'objets triée : UP en haut, DOWN en bas, puis alphabétique
+        $hostList = $hostsData.PSObject.Properties | ForEach-Object {
+            $val = $_.Value
+            # Le champ status peut être booléen ou entier (1/0)
+            $isUp = $false
+            if ($val.PSObject.Properties.Name -contains "status") {
+                $isUp = [bool]($val.status)
+            }
+            [PSCustomObject]@{
+                Name   = if ($val.name)  { $val.name }  else { $_.Name }
+                Key    = $_.Name
+                Status = $isUp
+                Type   = if ($val.type)  { $val.type }  else { "N/A" }
+                Note   = if ($val.note)  { [string]$val.note } else { "" }
+            }
+        } | Sort-Object -Property @{Expression = {-not $_.Status}; Ascending = $true}, Name
+
+        $upList    = @($hostList | Where-Object { $_.Status -eq $true })
+        $downList  = @($hostList | Where-Object { $_.Status -eq $false })
+        $upCount   = $upList.Count
+        $downCount = $downList.Count
+        $total     = $hostList.Count
+
+        Clear-Host
+        Write-Host ""
+        foreach ($line in $banner) { Write-Host $line -ForegroundColor Cyan }
+        Write-Host ""
+
+        # ── Résumé ────────────────────────────────────────────────────────────
+        $sep = "  " + ("─" * 70)
+        Write-Host $sep -ForegroundColor DarkGray
+        Write-Host ("  Total : $total hôtes   |   [UP] : $upCount   |   [DOWN] : $downCount   |   " + (Get-Date -Format "HH:mm:ss")) -ForegroundColor White
+        Write-Host $sep -ForegroundColor DarkGray
+        Write-Host ""
+
+        # ── Dimensions des colonnes ───────────────────────────────────────────
+        $wName   = 28
+        $wStatus = 10
+        $wType   = 12
+        $wNote   = 22
+
+        $tableTop    = "  ┌" + ("─" * ($wName+2)) + "┬" + ("─" * ($wStatus+2)) + "┬" + ("─" * ($wType+2)) + "┬" + ("─" * ($wNote+2)) + "┐"
+        $tableMid    = "  ├" + ("─" * ($wName+2)) + "┼" + ("─" * ($wStatus+2)) + "┼" + ("─" * ($wType+2)) + "┼" + ("─" * ($wNote+2)) + "┤"
+        $tableBottom = "  └" + ("─" * ($wName+2)) + "┴" + ("─" * ($wStatus+2)) + "┴" + ("─" * ($wType+2)) + "┴" + ("─" * ($wNote+2)) + "┘"
+
+        Write-Host $tableTop -ForegroundColor DarkCyan
+        Write-Host ("  │ {0,-$wName} │ {1,-$wStatus} │ {2,-$wType} │ {3,-$wNote} │" -f "HOTE", "STATUT", "TYPE", "NOTE") -ForegroundColor White
+        Write-Host $tableMid -ForegroundColor DarkCyan
+
+        $prevStatus = $true
+        foreach ($h in $hostList) {
+
+            # Ligne de séparation entre le bloc UP et le bloc DOWN
+            if ($prevStatus -eq $true -and $h.Status -eq $false -and $upCount -gt 0) {
+                Write-Host $tableMid -ForegroundColor DarkGray
+            }
+            $prevStatus = $h.Status
+
+            $statusLabel = if ($h.Status) { "[  UP  ]" } else { "[ DOWN ]" }
+            $color       = if ($h.Status) { "Green"   } else { "Red"     }
+
+            $dName = if ($h.Name.Length -gt $wName)  { $h.Name.Substring(0,$wName-1)+"…" } else { $h.Name }
+            $dType = if ($h.Type.Length -gt $wType)  { $h.Type.Substring(0,$wType-1)+"…" } else { $h.Type }
+            $dNote = if ($h.Note.Length -gt $wNote)  { $h.Note.Substring(0,$wNote-1)+"…" } else { $h.Note }
+
+            Write-Host ("  │ {0,-$wName} │ {1,-$wStatus} │ {2,-$wType} │ {3,-$wNote} │" -f $dName, $statusLabel, $dType, $dNote) -ForegroundColor $color
+        }
+
+        Write-Host $tableBottom -ForegroundColor DarkCyan
+        Write-Host ""
+
+        # ── Récap ─────────────────────────────────────────────────────────────
+        Write-Host ("  " + ("▓" * 30) + " RÉSUMÉ " + ("▓" * 30)) -ForegroundColor DarkGray
+        Write-Host "  ✔  Hôtes fonctionnels : $upCount"   -ForegroundColor Green
+        Write-Host "  ✘  Hôtes en panne     : $downCount" -ForegroundColor Red
+        Write-Host ("  " + ("░" * 68)) -ForegroundColor DarkGray
+
+        if ($downCount -gt 0) {
+            Write-Host ""
+            Write-Host "  Hôtes DOWN :" -ForegroundColor DarkRed
+            foreach ($h in $downList) {
+                $noteStr = if ($h.Note) { "  → $($h.Note)" } else { "" }
+                Write-Host "    - $($h.Name)$noteStr" -ForegroundColor Red
+            }
+        }
+
+        Write-Host ""
+        Write-Host "  Vérification effectuée le : $(Get-Date -Format 'dd/MM/yyyy à HH:mm:ss')" -ForegroundColor DarkGray
+        Write-Host ""
+
+    } catch {
+        Write-Host ""
+        Write-Host "  Erreur lors de la récupération des hôtes :" -ForegroundColor Red
+        Write-Host "  $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host ""
+        Write-Host "  → Vérifiez votre clé API et votre connexion internet." -ForegroundColor Yellow
+        Write-Log "Erreur Show-HostsStatus : $($_.Exception.Message)"
+    }
+}
+
 # Fonction pour débloquer un lien via l'API Alldebrid
 function Unlock-AlldebridLink {
     param (
@@ -366,10 +659,10 @@ function Unlock-AlldebridLink {
     Write-Log "Décodage du lien: $Link"
     $encodedLink = [System.Web.HttpUtility]::UrlEncode($Link)
 
-    $apiUrl = "https://api.alldebrid.com/v4/link/unlock?agent=$userAgent&apikey=$predefinedApiKey&link=$encodedLink"
+    $apiUrl = "https://api.alldebrid.com/v4/link/unlock?agent=$userAgent&link=$encodedLink"
 
     try {
-        $response = Invoke-RestMethod -Uri $apiUrl -Method Get
+        $response = Invoke-AlldebridApi -Url $apiUrl
 
         if ($response.status -eq "success") {
             Write-Log "Lien décodé avec succès"
@@ -597,10 +890,10 @@ function Get-AlldebridHistory {
 
     Write-Log "Récupération de l'historique des liens débridés..."
 
-    $apiUrl = "https://api.alldebrid.com/v4/user/history?agent=$Agent&apikey=$ApiKey"
+    $apiUrl = "https://api.alldebrid.com/v4/user/history?agent=$Agent"
 
     try {
-        $response = Invoke-RestMethod -Uri $apiUrl -Method Get
+        $response = Invoke-AlldebridApi -Url $apiUrl
 
         if ($response.status -eq "success") {
             Write-Log "Historique récupéré avec succès."
@@ -636,10 +929,10 @@ function Get-ADPremiumTime {
         [string]$Agent = $userAgent
     )
 
-    $apiUrl = "https://api.alldebrid.com/v4/user?agent=$Agent&apikey=$ApiKey"
+    $apiUrl = "https://api.alldebrid.com/v4/user?agent=$Agent"
 
     try {
-        $response = Invoke-RestMethod -Uri $apiUrl -Method Get
+        $response = Invoke-AlldebridApi -Url $apiUrl
         if ($response.status -eq "success") {
             $user = $response.data.user
             $expireTimestamp = $user.premiumUntil
@@ -771,7 +1064,7 @@ function Show-DownloadDialog {
 
     $pictureBoxGif.Add_Click({
     # Ici commence le code de la commande "blyat"
-    Write-Host "☭ Gloire à la mère patrie !" -ForegroundColor Red
+    Write-Host "☭ Слава родине! " -ForegroundColor Red
 
     # Liste des hymnes possibles
     $anthems = @(
@@ -894,7 +1187,7 @@ function Show-DownloadDialog {
             ⠀⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠇" -ForegroundColor Red
 
     # Message final en MessageBox (remplace Pause et Show-Menu)
-    [System.Windows.Forms.MessageBox]::Show("Camarade, your downloads will be glorious!, For the Motherland!", "Gloire à la Mère Patrie!", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+    [System.Windows.Forms.MessageBox]::Show("Camarade, your downloads will be glorious!, For the Motherland!", "Слава родине!", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
 
     # On ne ferme pas la fenêtre ici si vous souhaitez qu'elle reste ouverte.
     # Si vous voulez qu'elle se ferme après le message, décommentez la ligne ci-dessous:
@@ -1146,9 +1439,16 @@ function Show-DownloadDialog {
 
 # Fonction pour détecter l'installation de VLC
 function Find-VlcPath {
+    # 1. Chemins d'installation standard
     $possiblePaths = @(
         "${env:ProgramFiles}\VideoLAN\VLC\vlc.exe",
-        "${env:ProgramFiles(x86)}\VideoLAN\VLC\vlc.exe"
+        "${env:ProgramFiles(x86)}\VideoLAN\VLC\vlc.exe",
+        # Scoop (user)
+        "$env:USERPROFILE\scoop\apps\vlc\current\vlc.exe",
+        # Chocolatey
+        "C:\ProgramData\chocolatey\bin\vlc.exe",
+        # WinGet installe souvent dans ProgramFiles, déjà couvert, mais parfois dans LocalAppData
+        "$env:LOCALAPPDATA\Programs\VideoLAN\VLC\vlc.exe"
     )
 
     foreach ($path in $possiblePaths) {
@@ -1157,70 +1457,228 @@ function Find-VlcPath {
         }
     }
 
+    # 2. Fallback : chercher dans le PATH Windows
+    $inPath = Get-Command "vlc.exe" -ErrorAction SilentlyContinue
+    if ($inPath) {
+        return $inPath.Source
+    }
+
     return $null
 }
 
-# Fonction pour lire un lien directement avec VLC
+# Fonction pour lire un ou plusieurs liens directement avec VLC (fullscreen, playlist XSPF)
 function Start-VlcStreaming {
     param (
-        [string]$Link
+        [string[]]$Links    # Accepte 1 ou N liens
     )
 
-    Write-Log "Préparation du streaming pour: $Link"
-
-    # Décoder le lien via l'API Alldebrid
-    $unlocked = Unlock-AlldebridLink -Link $Link
-
-    if ($null -eq $unlocked) {
-        Write-Log "Impossible de débloquer le lien pour le streaming."
-        return $false
-    }
-
-    $streamLink = $unlocked.link
-    $fileName = $unlocked.filename
-
-    Write-Log "Lien direct obtenu pour streaming: $fileName"
-
-    # Trouver le chemin vers VLC
+    # ── Trouver VLC ─────────────────────────────────────────────────────────
     $vlcPath = Find-VlcPath
 
     if ($null -eq $vlcPath) {
-        Write-Host "VLC n'a pas été trouvé sur votre système." -ForegroundColor Red
-        Write-Host "Veuillez spécifier manuellement le chemin vers vlc.exe:" -ForegroundColor Yellow
-        $vlcPath = Read-Host "Chemin vers vlc.exe"
+        Write-Host ""
+        Write-Host "  VLC est introuvable sur ce système." -ForegroundColor Red
+        Write-Host "  Options :" -ForegroundColor Yellow
+        Write-Host "    1 » Entrer manuellement le chemin vers vlc.exe"
+        Write-Host "    2 » Ouvrir la page de téléchargement VLC"
+        Write-Host "    R » Annuler"
+        $vlcChoice = Read-Host "  Choix"
+        switch ($vlcChoice) {
+            "1" {
+                $vlcPath = Read-Host "  Chemin vers vlc.exe"
+                if (-not (Test-Path -Path $vlcPath)) {
+                    Write-Log "Chemin VLC invalide. Streaming annulé."
+                    Write-Host "  Chemin invalide. Streaming annulé." -ForegroundColor Red
+                    return $false
+                }
+            }
+            "2" {
+                Start-Process "https://www.videolan.org/vlc/"
+                Write-Host "  Page VLC ouverte dans le navigateur. Relancez après installation." -ForegroundColor Cyan
+                return $false
+            }
+            default { return $false }
+        }
+    }
 
-        if (-not (Test-Path -Path $vlcPath)) {
-            Write-Log "Chemin VLC invalide. Streaming annulé."
+    # ── Débridage de tous les liens ──────────────────────────────────────────
+    Write-Host "`n  Débridage de $($Links.Count) lien(s)..." -ForegroundColor Cyan
+    $streamItems = @()   # @{ Url; Title }
+
+    foreach ($link in $Links) {
+        Write-Log "Préparation du streaming pour : $link"
+        $unlocked = Unlock-AlldebridLink -Link $link
+        if ($null -eq $unlocked) {
+            Write-Host "  ECHEC débridage : $link" -ForegroundColor Red
+            Write-Log "Impossible de débloquer le lien : $link"
+            continue
+        }
+        $streamItems += @{
+            Url   = $unlocked.link
+            Title = if ($unlocked.filename) { $unlocked.filename } else { "Vidéo" }
+        }
+        Write-Host "  OK : $($unlocked.filename)" -ForegroundColor Green
+    }
+
+    if ($streamItems.Count -eq 0) {
+        Write-Host "  Aucun lien valide. Streaming annulé." -ForegroundColor Red
+        return $false
+    }
+
+    # ── Cas simple : 1 seul lien → lancement direct ──────────────────────────
+    if ($streamItems.Count -eq 1) {
+        $item = $streamItems[0]
+        Write-Host "`n  Lancement VLC — $($item.Title)" -ForegroundColor Green
+        Write-Log "VLC streaming (direct) : $($item.Title)"
+        try {
+            # --fullscreen + --no-video-title-show pour un affichage propre sur l'écran 2
+            Start-Process -FilePath $vlcPath -ArgumentList "--fullscreen --no-video-title-show `"$($item.Url)`""
+            return $true
+        } catch {
+            Write-Log "Erreur lancement VLC : $_"
+            Write-Host "  Erreur : $($_.Exception.Message)" -ForegroundColor Red
             return $false
         }
     }
 
-    try {
-        Write-Log "Lancement de VLC avec le lien streaming..."
-        Write-Host "Lancement de la lecture avec VLC..." -ForegroundColor Green
-        Write-Host "Titre: $fileName" -ForegroundColor Cyan
+    # ── Cas playlist : N liens → fichier XSPF temporaire ────────────────────
+    $xspfPath = Join-Path $env:TEMP "BetterAlldebrid_playlist_$(Get-Date -Format 'HHmmss').xspf"
 
-        # Démarrer VLC avec le lien en paramètre
-        Start-Process -FilePath $vlcPath -ArgumentList "--fullscreen `"$streamLink`"" -NoNewWindow
-
-        Write-Log "VLC démarré avec succès pour le streaming."
-        return $true
+    $xspfContent  = "<?xml version=`"1.0`" encoding=`"UTF-8`"?>`n"
+    $xspfContent += "<playlist xmlns=`"http://xspf.org/ns/0/`" version=`"1`">`n"
+    $xspfContent += "  <trackList>`n"
+    foreach ($item in $streamItems) {
+        $safeTitle = [System.Security.SecurityElement]::Escape($item.Title)
+        $safeUrl   = [System.Security.SecurityElement]::Escape($item.Url)
+        $xspfContent += "    <track><title>$safeTitle</title><location>$safeUrl</location></track>`n"
     }
-    catch {
-        Write-Log "Erreur lors du lancement de VLC: $_"
+    $xspfContent += "  </trackList>`n</playlist>"
+
+    $xspfContent | Out-File -FilePath $xspfPath -Encoding UTF8 -Force
+
+    Write-Host "`n  Playlist : $($streamItems.Count) titre(s) — lancement VLC..." -ForegroundColor Green
+    Write-Log "VLC streaming (playlist XSPF $($streamItems.Count) titres) : $xspfPath"
+
+    try {
+        Start-Process -FilePath $vlcPath -ArgumentList "--fullscreen --no-video-title-show `"$xspfPath`""
+        return $true
+    } catch {
+        Write-Log "Erreur lancement VLC playlist : $_"
+        Write-Host "  Erreur : $($_.Exception.Message)" -ForegroundColor Red
         return $false
     }
 }
 
 
-#  ████████╗ ██████╗ ██████╗ ██████╗ ███████╗███╗   ██╗████████╗     ██████╗ ███████╗███████╗████████╗██╗ ██████╗ ███╗   ██╗
-#  ╚══██╔══╝██╔═══██╗██╔══██╗██╔══██╗██╔════╝████╗  ██║╚══██╔══╝    ██╔════╝ ██╔════╝██╔════╝╚══██╔══╝██║██╔═══██╗████╗  ██║
-#     ██║   ██║   ██║██████╔╝██████╔╝█████╗  ██╔██╗ ██║   ██║       ██║  ███╗█████╗  ███████╗   ██║   ██║██║   ██║██╔██╗ ██║
-#     ██║   ██║   ██║██╔══██╗██╔══██╗██╔══╝  ██║╚██╗██║   ██║       ██║   ██║██╔══╝  ╚════██║   ██║   ██║██║   ██║██║╚██╗██║
-#     ██║   ╚██████╔╝██║  ██║██║  ██║███████╗██║ ╚████║   ██║       ╚██████╔╝███████╗███████║   ██║   ██║╚██████╔╝██║ ╚████║
-#     ╚═╝    ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═══╝   ╚═╝        ╚═════╝ ╚══════╝╚══════╝   ╚═╝   ╚═╝ ╚═════╝ ╚═╝  ╚═══╝
+#  ██╗  ██╗███████╗██╗     ██████╗ ███████╗██████╗ ███████╗
+#  ██║  ██║██╔════╝██║     ██╔══██╗██╔════╝██╔══██╗██╔════╝
+#  ███████║█████╗  ██║     ██████╔╝█████╗  ██████╔╝███████╗
+#  ██╔══██║██╔══╝  ██║     ██╔═══╝ ██╔══╝  ██╔══██╗╚════██║
+#  ██║  ██║███████╗███████╗██║     ███████╗██║  ██║███████║
+#  ╚═╝  ╚═╝╚══════╝╚══════╝╚═╝     ╚══════╝╚═╝  ╚═╝╚══════╝
 
-# Fonction pour télécharger un torrent via l'API Alldebrid
+# Détecte si le disque hébergeant $Path est un SSD ou un HDD
+# Retourne "falloc" (SSD → allocation rapide) ou "none" (HDD → pas d'allocation)
+function Get-DriveFileAllocation {
+    param([string]$Path)
+    try {
+        $driveLetter = [System.IO.Path]::GetPathRoot($Path).TrimEnd(':\')
+        if ([string]::IsNullOrEmpty($driveLetter)) { throw "Impossible d'extraire la lettre de lecteur." }
+
+        $partition = Get-Partition -DriveLetter $driveLetter -ErrorAction Stop
+        $physDisks  = Get-PhysicalDisk -ErrorAction Stop
+        $disk       = Get-Disk -Number $partition.DiskNumber -ErrorAction Stop
+
+        $physDisk = $physDisks | Where-Object { $_.DeviceId -eq $disk.Number.ToString() }
+
+        if ($physDisk -and $physDisk.MediaType -eq "SSD") {
+            Write-Host "  [Disque] SSD détecté  → --file-allocation=falloc" -ForegroundColor DarkGray
+            Write-Log "Disque SSD détecté pour $Path : file-allocation=falloc"
+            return "falloc"
+        } else {
+            Write-Host "  [Disque] HDD détecté  → --file-allocation=none" -ForegroundColor DarkGray
+            Write-Log "Disque HDD détecté pour $Path : file-allocation=none"
+            return "none"
+        }
+    } catch {
+        # En cas d'erreur WMI/inconnu, on joue la sécurité avec "none"
+        Write-Host "  [Disque] Type indéterminé → --file-allocation=none (safe)" -ForegroundColor DarkGray
+        Write-Log "Type disque indéterminé pour $Path, fallback none : $_"
+        return "none"
+    }
+}
+
+# Télécharge et installe aria2c portable si introuvable
+function Install-Aria2cIfMissing {
+    # Vérifier si aria2c est déjà accessible
+    $found = Get-Command "aria2c.exe" -ErrorAction SilentlyContinue
+    if ($found) {
+        Write-Host "  aria2c trouvé : $($found.Source)" -ForegroundColor DarkGray
+        return $found.Source
+    }
+
+    # Chercher dans le dossier du script (portable)
+    $scriptDir   = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.ScriptName }
+    $localAria2  = Join-Path $scriptDir "aria2c.exe"
+    if (Test-Path $localAria2) {
+        Write-Host "  aria2c portable trouvé : $localAria2" -ForegroundColor DarkGray
+        return $localAria2
+    }
+
+    # Proposer le téléchargement
+    Write-Host ""
+    Write-Host "  ⚠  aria2c.exe introuvable sur ce système." -ForegroundColor Yellow
+    Write-Host "  Voulez-vous le télécharger automatiquement (portable, ~3 Mo) ? (O/N)" -ForegroundColor Yellow
+    $resp = Read-Host "  Réponse"
+    if ($resp -notmatch '^[Oo]$') {
+        Write-Host "  Installation annulée. Téléchargez aria2 sur https://aria2.github.io/" -ForegroundColor Red
+        return $null
+    }
+
+    try {
+        Write-Host "  Récupération de la dernière version aria2 depuis GitHub..." -ForegroundColor Cyan
+
+        # Récupérer la dernière release via l'API GitHub
+        $releaseInfo = Invoke-RestMethod -Uri "https://api.github.com/repos/aria2/aria2/releases/latest" -UseBasicParsing
+        $asset = $releaseInfo.assets | Where-Object {
+            $_.name -match "win-64bit" -and $_.name -match "\.zip$"
+        } | Select-Object -First 1
+
+        if (-not $asset) {
+            # Fallback: asset 32-bit
+            $asset = $releaseInfo.assets | Where-Object { $_.name -match "win" -and $_.name -match "\.zip$" } | Select-Object -First 1
+        }
+        if (-not $asset) { throw "Aucun asset Windows trouvé dans la release GitHub." }
+
+        $zipPath = Join-Path $env:TEMP "aria2_download.zip"
+        Write-Host "  Téléchargement de $($asset.name)..." -ForegroundColor Cyan
+        Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zipPath -UseBasicParsing
+
+        $extractDir = Join-Path $env:TEMP "aria2_extracted"
+        if (Test-Path $extractDir) { Remove-Item $extractDir -Recurse -Force }
+        Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
+
+        $aria2cBin = Get-ChildItem -Path $extractDir -Filter "aria2c.exe" -Recurse | Select-Object -First 1
+        if (-not $aria2cBin) { throw "aria2c.exe introuvable dans l'archive." }
+
+        Copy-Item -Path $aria2cBin.FullName -Destination $localAria2 -Force
+        Write-Host "  aria2c installé dans : $localAria2" -ForegroundColor Green
+        Write-Log "aria2c téléchargé et installé : $localAria2 ($($releaseInfo.tag_name))"
+
+        # Nettoyage
+        Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+        Remove-Item $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+
+        return $localAria2
+    } catch {
+        Write-Host "  Erreur lors de l'installation d'aria2c : $($_.Exception.Message)" -ForegroundColor Red
+        Write-Log "Echec installation aria2c : $($_.Exception.Message)"
+        Write-Host "  Téléchargez-le manuellement sur https://aria2.github.io/" -ForegroundColor Yellow
+        return $null
+    }
+}
+
+
 function Add-AlldebridTorrent {
     param (
         [Parameter(Mandatory=$true)]
@@ -1229,81 +1687,109 @@ function Add-AlldebridTorrent {
 
     Write-Log "Ajout du torrent: $TorrentSource"
 
-    # Déterminer si c'est un magnet, une URL ou un fichier local
+    # ── Lien magnet ──────────────────────────────────────────────────────────
     if ($TorrentSource -match "^magnet:\?") {
-        # C'est un lien magnet
         $encodedMagnet = [System.Web.HttpUtility]::UrlEncode($TorrentSource)
-        $apiUrl = "https://api.alldebrid.com/v4/magnet/upload?agent=$userAgent&apikey=$predefinedApiKey&magnets[]=$encodedMagnet"
+        $apiUrl = "https://api.alldebrid.com/v4/magnet/upload?agent=$userAgent&magnets[]=$encodedMagnet"
 
         try {
-            $response = Invoke-RestMethod -Uri $apiUrl -Method Get
-
+            $response = Invoke-AlldebridApi -Url $apiUrl
             if ($response.status -eq "success") {
                 Write-Log "Magnet ajouté avec succès"
                 return $response.data.magnets[0]
             } else {
-                Write-Log "Erreur lors de l'ajout du magnet: $($response.error.message)"
+                Write-Log "Erreur ajout magnet: $($response.error.message)"
                 return $null
             }
         } catch {
-            Write-Log "Exception lors de l'appel à l'API: $_"
+            Write-Log "Exception ajout magnet: $_"
             return $null
         }
     }
+
+    # ── URL http(s) pointant vers un .torrent ────────────────────────────────
     elseif ($TorrentSource -match "^https?://") {
-        # C'est une URL de torrent
         $encodedUrl = [System.Web.HttpUtility]::UrlEncode($TorrentSource)
-        $apiUrl = "https://api.alldebrid.com/v4/magnet/upload/url?agent=$userAgent&apikey=$predefinedApiKey&url=$encodedUrl"
+        $apiUrl = "https://api.alldebrid.com/v4/magnet/upload/url?agent=$userAgent&url=$encodedUrl"
 
         try {
-            $response = Invoke-RestMethod -Uri $apiUrl -Method Get
-
+            $response = Invoke-AlldebridApi -Url $apiUrl
             if ($response.status -eq "success") {
                 Write-Log "Torrent URL ajouté avec succès"
+                # L'API retourne tantôt .magnet tantôt .magnets[0] selon la version
+                if ($response.data.magnets) { return $response.data.magnets[0] }
                 return $response.data.magnet
             } else {
-                Write-Log "Erreur lors de l'ajout du torrent URL: $($response.error.message)"
+                Write-Log "Erreur ajout URL torrent: $($response.error.message)"
                 return $null
             }
         } catch {
-            Write-Log "Exception lors de l'appel à l'API: $_"
+            Write-Log "Exception ajout URL torrent: $_"
             return $null
         }
     }
+
+    # ── Fichier .torrent local — upload multipart/form-data robuste ──────────
     else {
-        # On suppose que c'est un fichier local
-        if (Test-Path -Path $TorrentSource) {
-            $apiUrl = "https://api.alldebrid.com/v4/magnet/upload/file?agent=$userAgent&apikey=$predefinedApiKey"
+        if (-not (Test-Path -LiteralPath $TorrentSource)) {
+            Write-Log "Fichier torrent introuvable: $TorrentSource"
+            Write-Host "  Fichier introuvable : $TorrentSource" -ForegroundColor Red
+            return $null
+        }
 
-            try {
-                $fileBin = [System.IO.File]::ReadAllBytes($TorrentSource)
-                $fileEnc = [System.Text.Encoding]::GetEncoding("ISO-8859-1").GetString($fileBin)
-                $boundary = [System.Guid]::NewGuid().ToString()
-                $LF = "`r`n"
+        $apiUrl  = "https://api.alldebrid.com/v4/magnet/upload/file?agent=$userAgent"
+        $boundary = "----BetterAlldebrid" + [System.Guid]::NewGuid().ToString("N")
+        $CRLF     = "`r`n"
+        $fileName = [System.IO.Path]::GetFileName($TorrentSource)
+        $fileBytes = [System.IO.File]::ReadAllBytes($TorrentSource)
 
-                $bodyLines = (
-                    "--$boundary",
-                    "Content-Disposition: form-data; name=`"file`"; filename=`"$(Split-Path -Leaf $TorrentSource)`"",
-                    "Content-Type: application/x-bittorrent$LF",
-                    $fileEnc,
-                    "--$boundary--$LF"
-                ) -join $LF
+        # Construction manuelle du corps multipart en bytes (évite les corruptions d'encodage)
+        $headerText  = "--$boundary$CRLF"
+        $headerText += "Content-Disposition: form-data; name=`"file[]\`"; filename=`"$fileName`"$CRLF"
+        $headerText += "Content-Type: application/x-bittorrent$CRLF$CRLF"
+        $footerText  = "$CRLF--$boundary--$CRLF"
 
-                $response = Invoke-RestMethod -Uri $apiUrl -Method Post -ContentType "multipart/form-data; boundary=`"$boundary`"" -Body $bodyLines
+        $headerBytes = [System.Text.Encoding]::ASCII.GetBytes($headerText)
+        $footerBytes = [System.Text.Encoding]::ASCII.GetBytes($footerText)
 
-                if ($response.status -eq "success") {
-                    Write-Log "Fichier torrent ajouté avec succès"
-                    return $response.data.magnets[0]
-                } else {
-                    Write-Log "Erreur lors de l'ajout du fichier torrent: $($response.error.message)"
-                    return $null
-                }
-            } catch {
-                Write-Log "Exception lors de l'upload du fichier torrent: $_"
+        $bodyStream = New-Object System.IO.MemoryStream
+        $bodyStream.Write($headerBytes, 0, $headerBytes.Length)
+        $bodyStream.Write($fileBytes,   0, $fileBytes.Length)
+        $bodyStream.Write($footerBytes, 0, $footerBytes.Length)
+        $bodyBytes = $bodyStream.ToArray()
+        $bodyStream.Dispose()
+
+        try {
+            $webReq                 = [System.Net.HttpWebRequest]::Create($apiUrl)
+            $webReq.Method          = "POST"
+            $webReq.ContentType     = "multipart/form-data; boundary=$boundary"
+            $webReq.ContentLength   = $bodyBytes.Length
+            $webReq.UserAgent       = $userAgent
+            $webReq.Headers.Add("Authorization", "Bearer $predefinedApiKey")
+
+            $reqStream = $webReq.GetRequestStream()
+            $reqStream.Write($bodyBytes, 0, $bodyBytes.Length)
+            $reqStream.Close()
+
+            $webResp   = $webReq.GetResponse()
+            $reader    = New-Object System.IO.StreamReader($webResp.GetResponseStream())
+            $rawJson   = $reader.ReadToEnd()
+            $reader.Close()
+            $webResp.Close()
+
+            $response = $rawJson | ConvertFrom-Json
+
+            if ($response.status -eq "success") {
+                Write-Log "Fichier torrent '$fileName' uploadé avec succès"
+                return $response.data.magnets[0]
+            } else {
+                Write-Log "Erreur upload fichier torrent: $($response.error.message)"
+                Write-Host "  Erreur API : $($response.error.message)" -ForegroundColor Red
                 return $null
             }
-        } else {
-            Write-Log "Fichier torrent non trouvé: $TorrentSource"
+        } catch {
+            Write-Log "Exception upload fichier torrent: $_"
+            Write-Host "  Exception : $($_.Exception.Message)" -ForegroundColor Red
             return $null
         }
     }
@@ -1316,10 +1802,10 @@ function Get-TorrentStatus {
         [string]$MagnetId
     )
 
-    $apiUrl = "https://api.alldebrid.com/v4/magnet/status?agent=$userAgent&apikey=$predefinedApiKey&id=$MagnetId"
+    $apiUrl = "https://api.alldebrid.com/v4/magnet/status?agent=$userAgent&id=$MagnetId"
 
     try {
-        $response = Invoke-RestMethod -Uri $apiUrl -Method Get
+        $response = Invoke-AlldebridApi -Url $apiUrl
 
         if ($response.status -eq "success") {
             return $response.data.magnets
@@ -1335,10 +1821,10 @@ function Get-TorrentStatus {
 
 # Fonction pour lister tous les torrents
 function Get-AllTorrents {
-    $apiUrl = "https://api.alldebrid.com/v4/magnet/status?agent=$userAgent&apikey=$predefinedApiKey"
+    $apiUrl = "https://api.alldebrid.com/v4/magnet/status?agent=$userAgent"
 
     try {
-        $response = Invoke-RestMethod -Uri $apiUrl -Method Get
+        $response = Invoke-AlldebridApi -Url $apiUrl
 
         if ($response.status -eq "success") {
             return $response.data.magnets
@@ -1359,10 +1845,10 @@ function Remove-Torrent {
         [string]$MagnetId
     )
 
-    $apiUrl = "https://api.alldebrid.com/v4/magnet/delete?agent=$userAgent&apikey=$predefinedApiKey&id=$MagnetId"
+    $apiUrl = "https://api.alldebrid.com/v4/magnet/delete?agent=$userAgent&id=$MagnetId"
 
     try {
-        $response = Invoke-RestMethod -Uri $apiUrl -Method Get
+        $response = Invoke-AlldebridApi -Url $apiUrl
 
         if ($response.status -eq "success") {
             Write-Log "Torrent supprimé avec succès"
@@ -1516,24 +2002,83 @@ function Show-AddTorrentDialog {
     Write-Host "===== Ajout d'un nouveau torrent =====" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "1. Ajouter par lien magnet"
+    Write-Host "2. Ajouter depuis un fichier .torrent (explorateur)"
+    Write-Host "3. Ajouter depuis un fichier .torrent (saisie du chemin)"
     Write-Host "R. Retour"
 
     $choice = Read-Host "Choisissez une option"
 
     switch ($choice) {
+
+        # ── Lien magnet ──────────────────────────────────────────────────────
         "1" {
             $magnet = Read-Host "Entrez le lien magnet"
+            if ([string]::IsNullOrWhiteSpace($magnet)) {
+                Write-Host "Lien vide. Annulé." -ForegroundColor Yellow
+                Pause; Show-AddTorrentDialog; return
+            }
+            Write-Host "  Envoi à Alldebrid..." -ForegroundColor Cyan
             $result = Add-AlldebridTorrent -TorrentSource $magnet
             if ($result) {
-                Write-Host "Torrent ajouté avec succès. ID: $($result.id)" -ForegroundColor Green
-                # Optionnel : attendre que le torrent soit analysé
+                Write-Host "  Torrent ajouté ! ID: $($result.id)" -ForegroundColor Green
                 Wait-ForTorrentInitialization -MagnetId $result.id
             } else {
-                Write-Host "Échec de l'ajout du torrent." -ForegroundColor Red
+                Write-Host "  Échec de l'ajout du torrent." -ForegroundColor Red
             }
             Pause
             Show-TorrentManager
         }
+
+        # ── Fichier .torrent via OpenFileDialog ──────────────────────────────
+        "2" {
+            $ofd = New-Object System.Windows.Forms.OpenFileDialog
+            $ofd.Title            = "Sélectionnez un fichier .torrent"
+            $ofd.Filter           = "Fichiers Torrent (*.torrent)|*.torrent|Tous les fichiers (*.*)|*.*"
+            $ofd.InitialDirectory = [Environment]::GetFolderPath('Desktop')
+            $ofd.Multiselect      = $false
+
+            if ($ofd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+                $torrentPath = $ofd.FileName
+                Write-Host "  Fichier sélectionné : $torrentPath" -ForegroundColor Cyan
+                Write-Host "  Upload vers Alldebrid..." -ForegroundColor Cyan
+                $result = Add-AlldebridTorrent -TorrentSource $torrentPath
+                if ($result) {
+                    Write-Host "  Torrent ajouté ! ID: $($result.id)" -ForegroundColor Green
+                    Wait-ForTorrentInitialization -MagnetId $result.id
+                } else {
+                    Write-Host "  Échec de l'upload du fichier torrent." -ForegroundColor Red
+                }
+            } else {
+                Write-Host "  Sélection annulée." -ForegroundColor Yellow
+            }
+            Pause
+            Show-TorrentManager
+        }
+
+        # ── Fichier .torrent via saisie manuelle ─────────────────────────────
+        "3" {
+            $torrentPath = Read-Host "Chemin vers le fichier .torrent"
+            $torrentPath = $torrentPath.Trim('"').Trim("'")   # Tolère le drag-and-drop avec guillemets
+            if ([string]::IsNullOrWhiteSpace($torrentPath)) {
+                Write-Host "  Chemin vide. Annulé." -ForegroundColor Yellow
+                Pause; Show-AddTorrentDialog; return
+            }
+            if (-not (Test-Path -LiteralPath $torrentPath)) {
+                Write-Host "  Fichier introuvable : $torrentPath" -ForegroundColor Red
+                Pause; Show-AddTorrentDialog; return
+            }
+            Write-Host "  Upload vers Alldebrid..." -ForegroundColor Cyan
+            $result = Add-AlldebridTorrent -TorrentSource $torrentPath
+            if ($result) {
+                Write-Host "  Torrent ajouté ! ID: $($result.id)" -ForegroundColor Green
+                Wait-ForTorrentInitialization -MagnetId $result.id
+            } else {
+                Write-Host "  Échec de l'upload du fichier torrent." -ForegroundColor Red
+            }
+            Pause
+            Show-TorrentManager
+        }
+
         "R" { return }
         default {
             Write-Host "Option invalide." -ForegroundColor Red
@@ -1628,52 +2173,82 @@ function Download-TorrentFiles {
         return
     }
 
+    # ── Vérification : le torrent doit être "downloaded" côté Alldebrid ──────
+    if ($updatedTorrent.status -ne "downloaded") {
+        Clear-Host
+        Write-Host "===== Téléchargement des fichiers du torrent =====" -ForegroundColor Cyan
+        Write-Host ""
+        Write-Host "  Torrent    : $($updatedTorrent.filename)"
+        Write-Host "  Statut     : $($updatedTorrent.status)" -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "  Le torrent n'est pas encore prêt côté Alldebrid." -ForegroundColor Yellow
+        Write-Host "  Voulez-vous attendre la fin du traitement ? (O/N)"
+        $wait = Read-Host
+        if ($wait -eq "O" -or $wait -eq "o") {
+            Wait-ForTorrentCompletion -MagnetId $updatedTorrent.id
+            # Rafraîchir après attente
+            $updatedTorrent = Get-TorrentStatus -MagnetId $Torrent.id
+            if ($null -eq $updatedTorrent -or $updatedTorrent.status -ne "downloaded") {
+                Write-Host "  Torrent toujours non prêt. Abandon." -ForegroundColor Red
+                Pause; return
+            }
+        } else {
+            return
+        }
+    }
+
+    if (-not $updatedTorrent.links -or $updatedTorrent.links.Count -eq 0) {
+        Write-Host "  Aucun lien disponible pour ce torrent." -ForegroundColor Red
+        Pause; return
+    }
+
     Clear-Host
     Write-Host "===== Téléchargement des fichiers du torrent =====" -ForegroundColor Cyan
     Write-Host ""
-    Write-Host "Torrent: $($updatedTorrent.filename)"
-    Write-Host "Fichiers disponibles:"
+    Write-Host "  Torrent : $($updatedTorrent.filename)" -ForegroundColor White
+    Write-Host ""
+    Write-Host "  Fichiers disponibles :" -ForegroundColor Cyan
 
     $i = 1
     foreach ($link in $updatedTorrent.links) {
-        Write-Host "$i. $($link.filename) ($(Format-Size -Bytes $link.size))"
+        Write-Host ("  {0,3}. {1}  ({2})" -f $i, $link.filename, (Format-Size -Bytes $link.size))
         $i++
     }
 
     Write-Host ""
-    Write-Host "Options:"
-    Write-Host "1-$($updatedTorrent.links.Count): Télécharger un fichier spécifique"
-    Write-Host "A. Télécharger tous les fichiers"
-    Write-Host "R. Retour"
+    Write-Host "  Options :"
+    Write-Host "    1-$($updatedTorrent.links.Count) : Télécharger un fichier spécifique"
+    Write-Host "    A           : Télécharger tous les fichiers (via aria2)"
+    Write-Host "    R           : Retour"
 
-    $choice = Read-Host "Choisissez une option"
+    $choice = Read-Host "  Choisissez"
 
+    # ── Téléchargement de TOUS les fichiers via aria2 ────────────────────────
     if ($choice -eq "A") {
-        # Créer un sous-dossier pour le torrent
         $torrentFolder = Join-Path -Path $script:currentDownloadFolder -ChildPath (Remove-InvalidFileNameChars -Name $updatedTorrent.filename)
         if (-not (Test-Path -Path $torrentFolder)) {
             New-Item -ItemType Directory -Path $torrentFolder | Out-Null
         }
 
-        # Télécharger tous les fichiers
-        $links = @()
-        foreach ($link in $updatedTorrent.links) {
-            $links += $link.link
-        }
+        $links = @($updatedTorrent.links | ForEach-Object { $_.link })
 
-        Start-AlldebridDownload -Links $links -Category (Split-Path -Leaf $torrentFolder)
+        Write-Host "`n  Débridage + téléchargement de $($links.Count) fichier(s) via aria2..." -ForegroundColor Cyan
+        Start-AlldebridAria2cDownload -Links $links -Category (Split-Path -Leaf $torrentFolder)
     }
+
+    # ── Téléchargement d'UN fichier spécifique via aria2 ─────────────────────
     elseif ($choice -match "^\d+$" -and [int]$choice -gt 0 -and [int]$choice -le $updatedTorrent.links.Count) {
-        $fileIndex = [int]$choice - 1
-        $fileLink = $updatedTorrent.links[$fileIndex].link
+        $fileLink = $updatedTorrent.links[[int]$choice - 1].link
 
-        Start-AlldebridDownload -Links @($fileLink)
+        Write-Host "`n  Débridage + téléchargement via aria2..." -ForegroundColor Cyan
+        Start-AlldebridAria2cDownload -Links @($fileLink)
     }
+
     elseif ($choice -eq "R") {
         return
     }
     else {
-        Write-Host "Option invalide." -ForegroundColor Red
+        Write-Host "  Option invalide." -ForegroundColor Red
         Pause
         Download-TorrentFiles -Torrent $updatedTorrent
     }
@@ -1793,124 +2368,388 @@ function Wait-ForTorrentCompletion {
 #
 $Aria2cPath = "aria2c.exe"                     # Chemin vers aria2c.exe (si non dans le PATH, mettez le chemin complet)
 $MaxConnectionsPerServer = 16                  # Nombre maximum de connexions par serveur pour aria2c (multi-threading)
-$SplitDownloads = 20                          # Nombre de splits (segments) pour le téléchargement (multi-threading)
+$SplitDownloads = 16                          # Nombre de splits (segments) pour le téléchargement (multi-threading)
+
+# Dossier de stockage des fichiers de session aria2 (reprise après interruption)
+# Les fichiers .session sont créés ici, un par téléchargement.
+$script:Aria2SessionDir = if ($PSScriptRoot) { $PSScriptRoot } else { [Environment]::GetFolderPath('MyDocuments') }
 
 
 function Start-Aria2cDownload {
     param (
         [string]$DirectLink,
-        [string]$OutputDirectory
+        [string]$OutputDirectory,
+        [string]$FileName = ""
     )
 
-    # Obtenir le nom de fichier pour le log, en s'assurant qu'il est valide
-    $fileName = [System.IO.Path]::GetFileNameWithoutExtension($DirectLink)
-    if ([string]::IsNullOrEmpty($fileName)) {
-        $fileName = "unknown_file_" + (Get-Random)
+    # ── Vérification / installation d'aria2c ────────────────────────────────
+    $resolvedAria2c = Install-Aria2cIfMissing
+    if (-not $resolvedAria2c) {
+        Write-Host "  aria2c indisponible. Abandon." -ForegroundColor Red
+        return $false
     }
-    # Nettoyer le nom du fichier pour les caractères interdits dans les chemins
-    #$sanitizedFileName = ($fileName -replace '[\\/:*?"<>|]', '_')
 
-    #$LogFile = Join-Path -Path $OutputDirectory -ChildPath "$($sanitizedFileName)_aria2c.log"
+    if ([string]::IsNullOrEmpty($FileName)) {
+        $FileName = [System.IO.Path]::GetFileName(([System.Uri]$DirectLink).LocalPath)
+        if ([string]::IsNullOrEmpty($FileName)) { $FileName = "fichier_inconnu" }
+    }
+
+    # ── Détection SSD/HDD → file-allocation ─────────────────────────────────
+    $fileAlloc = Get-DriveFileAllocation -Path $OutputDirectory
+
+    # ── Fichier de session aria2 (reprise après interruption) ────────────────
+    $safeName   = ($FileName -replace '[\\/:*?"<>|]', '_').Substring(0, [Math]::Min($FileName.Length, 60))
+    $sessionFile = Join-Path $script:Aria2SessionDir "aria2_$safeName.session"
 
     $Aria2cArguments = @(
-        "--dir=$OutputDirectory",
+        "--dir=`"$OutputDirectory`"",
         "--max-connection-per-server=$MaxConnectionsPerServer",
         "--split=$SplitDownloads",
+        "--min-split-size=5M",
         "--auto-file-renaming=false",
-        "--file-allocation=none",
+        "--file-allocation=$fileAlloc",
         "--continue=true",
-        "--console-log-level=warn",
+        "--connect-timeout=10",
+        "--timeout=60",
+        "--max-tries=5",
+        "--retry-wait=3",
+        "--disk-cache=256M",
+        "--summary-interval=1",
+        "--console-log-level=notice",
+        "--save-session=`"$sessionFile`"",
+        "--save-session-interval=10",
+        $(if (Test-Path $sessionFile) { "--input-file=`"$sessionFile`"" }),
         $DirectLink
-    )
+    ) | Where-Object { $_ -ne $null }
 
-    Write-Host "Lancement du téléchargement avec aria2c pour : $DirectLink (en arrière-plan)"
-    Write-Host "Commande aria2c : $Aria2cPath $($Aria2cArguments -join ' ')"
+    Write-Host "`n  Démarrage : $FileName" -ForegroundColor Cyan
+    if (Test-Path $sessionFile) {
+        Write-Host "  Session précédente détectée — reprise en cours..." -ForegroundColor DarkYellow
+        Write-Log "Aria2c reprise session : $sessionFile"
+    }
+    Write-Log "Aria2c démarrage : $FileName -> $OutputDirectory (alloc=$fileAlloc)"
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName               = $resolvedAria2c
+    $psi.Arguments              = $Aria2cArguments -join " "
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError  = $true
+    $psi.UseShellExecute        = $false
+    $psi.CreateNoWindow         = $true
+
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $psi
+
+    # Hashtable synchronisée — thread-safe, accessible depuis les event handlers
+    $sync = [hashtable]::Synchronized(@{
+        Percent = 0
+        Status  = "Démarrage..."
+    })
+
+    $process.Start() | Out-Null
+
+    # Register-ObjectEvent crée un vrai Runspace — pas de crash
+    $stdoutJob = Register-ObjectEvent -InputObject $process -EventName OutputDataReceived -Action {
+        $line = $Event.SourceEventArgs.Data
+        if (-not $line) { return }
+
+        if ($line -match '\((\d+)%\).*?CN:(\d+).*?DL:([\d.]+\S+).*?ETA:(\S+)') {
+            $eta = $Matches[4] `
+                -replace '(\d+)h(\d+)m(\d+)s', '$1:$2:$3' `
+                -replace '(\d+)m(\d+)s',        '00:$1:$2' `
+                -replace '^(\d+)s$',             '00:00:$1'
+
+            $Event.MessageData.Percent = [int]$Matches[1]
+            $Event.MessageData.Status  = "CN: $($Matches[2])  |  DL: $($Matches[3])/s  |  ETA: $eta"
+        }
+    } -MessageData $sync
+
+    $stderrJob = Register-ObjectEvent -InputObject $process -EventName ErrorDataReceived -Action {
+        $line = $Event.SourceEventArgs.Data
+        if ($line -match 'Exception|error|ERROR|failed|FAILED') {
+            $Event.MessageData.Status = "[ERREUR] $line"
+        }
+    } -MessageData $sync
+
+    $process.BeginOutputReadLine()
+    $process.BeginErrorReadLine()
 
     try {
-        # --- MODIFICATION CLÉ ICI : Suppression de -Wait ---
-        $Process = Start-Process -FilePath $Aria2cPath -ArgumentList $Aria2cArguments  -PassThru -NoNewWindow
-        # -NoNewWindow: Empêche l'ouverture d'une nouvelle fenêtre de console pour aria2c
-        # -PassThru: Retourne l'objet processus (utile si on voulait le suivre)
-        # PAS de -Wait: Le script continue son exécution immédiatement.
+        # Boucle d'affichage — tourne dans le thread principal, sans bloquer aria2c
+        while (-not $process.HasExited) {
+            Write-Progress `
+                -Activity        "Téléchargement : $FileName" `
+                -Status          $sync.Status `
+                -PercentComplete $sync.Percent
+            Start-Sleep -Milliseconds 500
+        }
 
-        if ($Process) {
-            Write-Host "Processus aria2c lancé (PID: $($Process.Id)). Les logs sont dans : $LogFile"
-            return $Process.Id # Retourne le PID si vous voulez le suivre plus tard
+        $process.WaitForExit()
+        Write-Progress -Activity "Téléchargement : $FileName" -Completed
+
+        if ($process.ExitCode -eq 0) {
+            Write-Host "  Terminé : $FileName" -ForegroundColor Green
+            Write-Log "Aria2c succès : $FileName"
+            # Nettoyage du fichier de session une fois le téléchargement terminé
+            Remove-Item $sessionFile -Force -ErrorAction SilentlyContinue
+            return $true
         } else {
-            Write-Error "Impossible de démarrer le processus aria2c pour $DirectLink."
-            return $null
+            Write-Host "  Echec (code : $($process.ExitCode)) — session sauvegardée pour reprise." -ForegroundColor Red
+            Write-Log "Aria2c échec : $FileName (code $($process.ExitCode)) session=$sessionFile"
+            return $false
         }
     }
     catch {
-        Write-Error "Erreur lors de l'exécution de aria2c : $($_.Exception.Message)"
-        return $null
+        Write-Host "  Erreur : $($_.Exception.Message)" -ForegroundColor Red
+        Write-Log "Aria2c exception : $($_.Exception.Message)"
+        return $false
+    }
+    finally {
+        # Nettoyage des event handlers dans tous les cas
+        Unregister-Event -SourceIdentifier $stdoutJob.Name -ErrorAction SilentlyContinue
+        Unregister-Event -SourceIdentifier $stderrJob.Name -ErrorAction SilentlyContinue
+        Remove-Job -Job $stdoutJob -Force -ErrorAction SilentlyContinue
+        Remove-Job -Job $stderrJob -Force -ErrorAction SilentlyContinue
+        if (-not $process.HasExited) { $process.Kill() }
+        $process.Dispose()
     }
 }
 
 # --- Nouvelle fonction pour gérer les téléchargements via Aria2c ---
+$MaxParallelDownloads = 10  # A ajuster selon ta connexion
+
 function Start-AlldebridAria2cDownload {
     param (
         [string[]]$Links,
         [string]$Category = ""
     )
 
-    Initialize-Environment # Assurez-vous que l'environnement est initialisé (clés API, dossiers, etc.)
+    # ── Vérification / installation d'aria2c ────────────────────────────────
+    $resolvedAria2c = Install-Aria2cIfMissing
+    if (-not $resolvedAria2c) {
+        Write-Host "  aria2c indisponible. Abandon." -ForegroundColor Red
+        return
+    }
+
+    Initialize-Environment
 
     $destinationFolder = $script:currentDownloadFolder
     if ($Category -ne "") {
         $destinationFolder = Join-Path -Path $script:currentDownloadFolder -ChildPath $Category
         if (-not (Test-Path -Path $destinationFolder)) {
             New-Item -ItemType Directory -Path $destinationFolder | Out-Null
-            Write-Log "Dossier de catégorie créé: $destinationFolder"
+            Write-Log "Dossier créé : $destinationFolder"
         }
     }
 
-    Write-Host "`n--- Démarrage des téléchargements avec Aria2c ---" -ForegroundColor Green
+    # ── Détection SSD/HDD pour ce dossier de destination ────────────────────
+    $fileAlloc = Get-DriveFileAllocation -Path $destinationFolder
 
-    $successCount = 0
-    $failCount = 0
+    # ── Phase 1 : Débridage de tous les liens ──────────────────────────────
+    Write-Host "`n  Débridage de $($Links.Count) lien(s)..." -ForegroundColor Cyan
+    $downloads = @()
 
     foreach ($link in $Links) {
-        Write-Log "---------------------------------------------"
-        Write-Log "Traitement du lien: $link"
-
         $unlocked = Unlock-AlldebridLink -Link $link
-
         if ($null -ne $unlocked) {
-            $downloadLink = $unlocked.link
             $fileName = $unlocked.filename
-
             if ([string]::IsNullOrEmpty($fileName)) {
-                $uri = New-Object System.Uri($downloadLink)
+                $uri      = New-Object System.Uri($unlocked.link)
                 $fileName = [System.IO.Path]::GetFileName($uri.LocalPath)
                 if ([string]::IsNullOrEmpty($fileName)) {
                     $fileName = "download_$(Get-Date -Format 'yyyyMMdd_HHmmss').bin"
                 }
             }
+            # Fichier de session propre à ce téléchargement
+            $safeName    = ($fileName -replace '[\\/:*?"<>|]', '_').Substring(0, [Math]::Min($fileName.Length, 60))
+            $sessionFile = Join-Path $script:Aria2SessionDir "aria2_$safeName.session"
 
-            Write-Log "Lien direct obtenu pour: $fileName"
-            Write-Log "Démarrage du téléchargement avec Aria2c vers : $destinationFolder"
-
-            # Appel à la fonction Aria2c. Notez que Start-Aria2cDownload gère déjà la logique pour le nom de fichier
-            $aria2cPid = Start-Aria2cDownload -DirectLink $downloadLink -OutputDirectory $destinationFolder
-
-            if ($aria2cPid) {
-                Write-Log "Aria2c PID: $aria2cPid (Le téléchargement se fait en arrière-plan)."
-                Write-Host "Téléchargement '$fileName' lancé avec Aria2c. (PID: $aria2cPid)" -ForegroundColor DarkGreen
-                $successCount++
-            } else {
-                Write-Log "Échec du lancement d'Aria2c pour le lien: $link"
-                Write-Host "Échec du lancement d'Aria2c pour le lien: $link" -ForegroundColor Red
-                $failCount++
+            $downloads += @{
+                DirectLink   = $unlocked.link
+                FileName     = $fileName
+                Destination  = $destinationFolder
+                SessionFile  = $sessionFile
             }
+            $resumeTag = if (Test-Path $sessionFile) { " [reprise]" } else { "" }
+            Write-Host "  OK : $fileName$resumeTag" -ForegroundColor Green
         } else {
-            Write-Log "Échec du débridage du lien: $link"
-            Write-Host "Échec du débridage du lien: $link" -ForegroundColor Red
+            Write-Host "  ECHEC debridage : $link" -ForegroundColor Red
+            Write-Log "Echec débridage : $link"
+        }
+    }
+
+    if ($downloads.Count -eq 0) {
+        Write-Host "  Aucun lien valide. Abandon." -ForegroundColor Red
+        return
+    }
+
+    # ── Phase 2 : Téléchargements parallèles ──────────────────────────────
+    Write-Host "`n  Lancement de $($downloads.Count) téléchargement(s) (max $MaxParallelDownloads en parallèle)..." -ForegroundColor Cyan
+
+    # Hashtable synchronisée : chaque runspace écrit dedans, le thread principal lit
+    $sync = [hashtable]::Synchronized(@{})
+    for ($i = 0; $i -lt $downloads.Count; $i++) {
+        $sync["dl_$i"] = [hashtable]::Synchronized(@{
+            Percent = 0
+            Status  = "En attente..."
+            Name    = $downloads[$i].FileName
+            Done    = $false
+            Success = $false
+        })
+    }
+
+    # Scriptblock exécuté dans chaque runspace
+    # Pas de Register-ObjectEvent ici — on est dans un vrai thread PS, ReadLine est OK
+    $runspaceScript = {
+        param($download, $syncEntry, $aria2cPath, $maxConn, $splits, $fileAlloc, $sessionDir)
+
+        $sessionFile = $download.SessionFile
+        $inputFileArg = if (Test-Path $sessionFile) { "--input-file=`"$sessionFile`"" } else { $null }
+
+        $args = @(
+            "--dir=`"$($download.Destination)`"",
+            "--max-connection-per-server=$maxConn",
+            "--split=$splits",
+            "--min-split-size=2M",
+            "--auto-file-renaming=false",
+            "--file-allocation=$fileAlloc",
+            "--continue=true",
+            "--connect-timeout=10",
+            "--timeout=60",
+            "--max-tries=5",
+            "--retry-wait=3",
+            "--disk-cache=512M",
+            "--summary-interval=1",
+            "--console-log-level=notice",
+            "--uri-selector=feedback",
+            "--stream-piece-selector=geom",
+            "--save-session=`"$sessionFile`"",
+            "--save-session-interval=10",
+            $inputFileArg,
+            $download.DirectLink
+        ) | Where-Object { $_ -ne $null }
+
+        $psi                        = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName               = $aria2cPath
+        $psi.Arguments              = $args -join " "
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError  = $true
+        $psi.UseShellExecute        = $false
+        $psi.CreateNoWindow         = $true
+
+        $syncEntry.Status = "Démarrage..."
+        $process = [System.Diagnostics.Process]::Start($psi)
+
+        try {
+            while (-not $process.StandardOutput.EndOfStream) {
+                $line = $process.StandardOutput.ReadLine()
+                if (-not $line) { continue }
+
+                if ($line -match '\((\d+)%\).*?CN:(\d+).*?DL:([\d.]+\S+).*?ETA:(\S+)') {
+                    $eta = $Matches[4] `
+                        -replace '(\d+)h(\d+)m(\d+)s', '$1:$2:$3' `
+                        -replace '(\d+)m(\d+)s',        '00:$1:$2' `
+                        -replace '^(\d+)s$',             '00:00:$1'
+
+                    $syncEntry.Percent = [int]$Matches[1]
+                    $syncEntry.Status  = "CN:$($Matches[2])  DL:$($Matches[3])/s  ETA:$eta"
+                }
+            }
+
+            $process.WaitForExit()
+            $syncEntry.Success = ($process.ExitCode -eq 0)
+
+            # Supprimer le fichier de session si téléchargement terminé avec succès
+            if ($syncEntry.Success -and (Test-Path $sessionFile)) {
+                Remove-Item $sessionFile -Force -ErrorAction SilentlyContinue
+            }
+        }
+        catch {
+            $syncEntry.Success = $false
+        }
+        finally {
+            if (-not $process.HasExited) { $process.Kill() }
+            $process.Dispose()
+            $syncEntry.Done = $true
+        }
+    }
+
+    # Création du pool de runspaces
+    $pool = [RunspaceFactory]::CreateRunspacePool(1, $MaxParallelDownloads)
+    $pool.Open()
+
+    $runspaces = @()
+    for ($i = 0; $i -lt $downloads.Count; $i++) {
+        $ps = [PowerShell]::Create()
+        $ps.RunspacePool = $pool
+        $ps.AddScript($runspaceScript)            | Out-Null
+        $ps.AddArgument($downloads[$i])           | Out-Null
+        $ps.AddArgument($sync["dl_$i"])           | Out-Null
+        $ps.AddArgument($resolvedAria2c)          | Out-Null
+        $ps.AddArgument($MaxConnectionsPerServer) | Out-Null
+        $ps.AddArgument($SplitDownloads)          | Out-Null
+        $ps.AddArgument($fileAlloc)               | Out-Null
+        $ps.AddArgument($script:Aria2SessionDir)  | Out-Null
+
+        $runspaces += @{
+            PowerShell = $ps
+            Handle     = $ps.BeginInvoke()
+            Index      = $i
+        }
+    }
+
+    # ── Boucle d'affichage principal ───────────────────────────────────────
+    do {
+        $allDone = $true
+        for ($i = 0; $i -lt $downloads.Count; $i++) {
+            $entry = $sync["dl_$i"]
+            if (-not $entry.Done) { $allDone = $false }
+
+            Write-Progress `
+                -Id              ($i + 1) `
+                -ParentId        0 `
+                -Activity        "[$($i+1)/$($downloads.Count)] $($entry.Name)" `
+                -Status          $entry.Status `
+                -PercentComplete $entry.Percent
+        }
+        Start-Sleep -Milliseconds 500
+    } while (-not $allDone)
+
+    # ── Nettoyage et résumé ────────────────────────────────────────────────
+    for ($i = 0; $i -lt $downloads.Count; $i++) {
+        Write-Progress -Id ($i + 1) -Activity "done" -Completed
+    }
+
+    $successCount = 0
+    $failCount    = 0
+
+    foreach ($rs in $runspaces) {
+        $rs.PowerShell.EndInvoke($rs.Handle) | Out-Null
+        $rs.PowerShell.Dispose()
+
+        $entry = $sync["dl_$($rs.Index)"]
+        if ($entry.Success) {
+            Write-Host "  OK : $($entry.Name)" -ForegroundColor Green
+            Write-Log "Succès : $($entry.Name)"
+            $successCount++
+        } else {
+            Write-Host "  ECHEC : $($entry.Name)  (session conservée pour reprise)" -ForegroundColor Red
+            Write-Log "Echec : $($entry.Name)"
             $failCount++
         }
     }
-    Pause
-    Show-Menu
+
+    $pool.Close()
+    $pool.Dispose()
+
+    Write-Host "`n  Résumé : $successCount OK  |  $failCount echoué(s)" -ForegroundColor Cyan
+    Write-Log "Parallèle terminé : $successCount succès, $failCount échecs"
+
+    # ── Extraction automatique des archives ────────────────────────────────
+    if ($successCount -gt 0) {
+        Write-Host "`n  Recherche d'archives à extraire dans : $destinationFolder" -ForegroundColor Cyan
+        Expand-DownloadedArchives -Folder $destinationFolder
+    }
 }
 
 
@@ -2628,6 +3467,33 @@ function Play-AsciiAnimation {
     }
 }
 
+function Show-HelpMenu{
+    Clear-Host
+
+    Write-Host "    8  » Télécharger depuis un fichier texte"
+    Write-Host "    9  » Gestionnaire de torrents"
+    Write-Host "    10 » Speedtest"
+    Write-Host "    11 » Server Mode"
+    Write-Host "    12 » Video Server Mode"
+    Write-Host "    13 » Convertir une vidéo en MP4 (Pour les vieux PC)"
+    Write-Host ""
+    Write-Host "En vrai, le systeme de multithreading pour aria2 est tellement une uzine a gaz, que le schema est sympa a avoir mdrrr"
+    Write-Host "
+    ┌─────────────────────────────────────────────┐
+    │              Thread principal               │
+    │  Lit $sync toutes les 500ms → Write-Progress     │
+    └──────┬──────────────┬───────────────┬───────┘
+           │              │               │
+        Runspace 1     Runspace 2     Runspace 3
+        aria2c dl1     aria2c dl2     aria2c dl3
+          $sync.dl_0           $sync.dl_1         $sync.dl_2
+        "
+
+
+    Pause
+
+}
+
 
 #  ███╗   ███╗ █████╗ ██╗███╗   ██╗    ███╗   ███╗███████╗███╗   ██╗██╗   ██╗
 #  ████╗ ████║██╔══██╗██║████╗  ██║    ████╗ ████║██╔════╝████╗  ██║██║   ██║
@@ -2648,32 +3514,62 @@ function Show-Menu {
 
     Write-Centered "===== Alldebrid PowerShell Downloader =====" -ForegroundColor Cyan
 
-    Write-Host "`n1. Mode rapide (interface graphique)"
-    Write-Host "2. Télécharger un lien unique"
-    Write-Host "3. Télécharger plusieurs liens"
-    Write-Host "4. Télécharger depuis un fichier texte"
-    Write-Host "5. Modifier le dossier de téléchargement"
-    Write-Host "6. Lire directement avec VLC (streaming)"
-    Write-Host "7. Gestionnaire de torrents"
-    Write-Host "8. Afficher l'historique des liens débridés"
-    Write-Host "9. Speedtest"
-    Write-Host "10. Télécharger avec aria2 (un peu PT, mais c'est rapide t'inquite 👀)"
-    Write-Host "11. Server Mode"
-    Write-Host "12. Video Server Mode"
-    Write-Host "13. Convertir une vidéo en MP4 (Pour les vieux PC)"
-    Write-Host "Q. Quitter"
-    Write-Host "========================================================================================================================"
+    $splashTexts = @(
+        "☭ Слава родине !", #Slava Rodine!	Gloire à la Patrie !
+        "☭ Сила в правде !", #Sila v pravde.	La force est dans la vérité.
+        "☭ Связь защищена !", #Svyaz zashchishchena.	Connexion sécurisée.
+        "☭ Под надзором партии !", #Pod nadzorom partii.	Sous la surveillance du Parti.
+        "☭ Линия зашифрована !", #Liniya zashifrovana.	Ligne cryptée.
+        "☭ Машина работает !" #Mashina rabotayet.	La machine travaille.
+    )
+    Write-Centered ($splashTexts | Get-Random) -ForegroundColor Red
+
+    Write-Host ""
+
+    Write-Host "  [ TÉLÉCHARGEMENT ]" -ForegroundColor Green
+    Write-Host "    1  » Mode GUI"
+    Write-Host "    2  » Lien Unique"
+    Write-Host "    3  » Multi Liens"
+    Write-Host "    4  » Really Fucking Fast But Complicated Multi Thread Runspace Download Блять.... иди нахуй Windaube" -ForegroundColor Red
+    Write-Host ""
+
+    Write-Host "  [ STREAMING ]" -ForegroundColor DarkYellow
+    Write-Host "    5  » VLC Streaming"
+    Write-Host ""
+
+    Write-Host "  [ OUTILS ]" -ForegroundColor DarkGray
+    Write-Host "    6  » Historique"
+    Write-Host "    7  » Modifier le dossier de téléchargement"
+    Write-Host "    HS » Statut des hôtes" -ForegroundColor DarkCyan
+    Write-Host "    H  » Help"
+    Write-Host ""
+
+    Write-Host "   Q  » Quitter" -ForegroundColor Red
+    Write-Host "───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
     Write-Centered "Dossier de téléchargement actuel: $script:currentDownloadFolder" -ForegroundColor Yellow
-    Write-Host "========================================================================================================================"
+    Write-Host "───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
 
     $choice = Read-Host "Choisissez une option (1-13 Or Q)"
 
     switch ($choice) {
+
+        "H" {
+            Show-HelpMenu
+            Show-Menu
+        }
+
+        "HS" {
+            Show-HostsStatus
+            Pause
+            Show-Menu
+        }
+
         "1" {
             # Lancer l'interface graphique
             Show-DownloadDialog
             Show-Menu
         }
+
         "2" {
             $link = Read-Host "Entrez le lien à débloquer"
             $category = Read-Host "Catégorie (facultatif, laissez vide si aucune)"
@@ -2681,37 +3577,82 @@ function Show-Menu {
             Pause
             Show-Menu
         }
+
         "3" {
             $links = @()
-            Write-Host "Entrez les liens un par un. Tapez 'terminé' pour finir."
+            Write-Host "Entrez les liens un par un, 'end' pour finir."
 
             do {
-                $link = Read-Host "Lien (ou 'terminé')"
-                if ($link -ne "terminé") {
+                $link = Read-Host "Lien (ou 'end')"
+                if ($link -ne "end") {
                     $links += $link
                 }
-            } while ($link -ne "terminé")
+            } while ($link -ne "end")
 
             $category = Read-Host "Catégorie (facultatif, laissez vide si aucune)"
             Start-AlldebridDownload -Links $links -Category $category
             Pause
             Show-Menu
         }
+
         "4" {
-            $filePath = Read-Host "Chemin du fichier contenant les liens (un par ligne)"
+            $linksInput = @()
+            do {
+                $line = Read-Host "Liens a débridés ou vide pour finir "
+                if (-not [string]::IsNullOrWhiteSpace($line)) {
+                    $linksInput += $line.Trim()
+                }
+            } while (-not [string]::IsNullOrWhiteSpace($line))
 
-            if (Test-Path -Path $filePath) {
-                $links = Get-Content -Path $filePath | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-                $category = Read-Host "Catégorie (facultatif, laissez vide si aucune)"
-                Start-AlldebridDownload -Links $links -Category $category
+            $linksToDownload = $linksInput | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+
+            if ($linksToDownload.Count -gt 0) {
+                Write-Host "`Catégorie optionnelle (vide pour default) : " -ForegroundColor DarkYellow
+                $category = Read-Host
+
+                Start-AlldebridAria2cDownload -Links $linksToDownload -Category $category
             } else {
-                Write-Host "Fichier introuvable!" -ForegroundColor Red
+                Write-Host "Aucun lien fourni. Retour au menu." -ForegroundColor Red
+                Pause
+                Show-Menu
             }
+        }
 
+        "5" {
+            $vlcLinks = @()
+            Write-Host ""
+            Write-Host "  VLC Streaming — entrez les liens un par un." -ForegroundColor DarkYellow
+            Write-Host "  (Un seul lien = lecture directe | Plusieurs = playlist automatique)" -ForegroundColor DarkGray
+            Write-Host "  Entrée vide pour lancer." -ForegroundColor DarkGray
+            Write-Host ""
+            do {
+                $line = Read-Host "  Lien (ou Entrée pour lancer)"
+                if (-not [string]::IsNullOrWhiteSpace($line)) {
+                    $vlcLinks += $line.Trim()
+                }
+            } while (-not [string]::IsNullOrWhiteSpace($line))
+
+            if ($vlcLinks.Count -eq 0) {
+                Write-Host "  Aucun lien fourni." -ForegroundColor Red
+            } else {
+                $result = Start-VlcStreaming -Links $vlcLinks
+                if ($result) {
+                    Write-Host "`n  VLC lancé ! Bonne séance 🎬" -ForegroundColor Green
+                } else {
+                    Write-Host "  Échec du lancement." -ForegroundColor Red
+                }
+            }
             Pause
             Show-Menu
         }
-        "5" {
+
+        "6" {
+            Get-AlldebridHistory
+            Pause
+            Show-Menu
+        }
+
+        "7" {
             # Sélection du dossier de téléchargement avec Windows Forms
             Write-Host "Ouverture du sélecteur de dossier..." -ForegroundColor Cyan
             $selectedFolder = Select-Folder -Description "Choisissez le dossier de destination pour les téléchargements" -InitialDirectory $script:currentDownloadFolder
@@ -2726,60 +3667,33 @@ function Show-Menu {
             Pause
             Show-Menu
         }
-        "6" {
-            $link = Read-Host "Entrez le lien à streamer avec VLC"
-            $result = Start-VlcStreaming -Link $link
 
-            if ($result) {
-                Write-Host "Lecture lancée dans VLC. Profitez de votre vidéo!" -ForegroundColor Green
+        "8" {
+            $filePath = Read-Host "Chemin du fichier contenant les liens (un par ligne)"
+
+            if (Test-Path -Path $filePath) {
+                $links = Get-Content -Path $filePath | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+                $category = Read-Host "Catégorie (facultatif, laissez vide si aucune)"
+                Start-AlldebridDownload -Links $links -Category $category
             } else {
-                Write-Host "Échec du lancement de la lecture." -ForegroundColor Red
+                Write-Host "Fichier introuvable!" -ForegroundColor Red
             }
 
             Pause
             Show-Menu
         }
-        "7" {
+
+        "9" {
             # Nouvelle option pour le gestionnaire de torrents
             Show-TorrentManager
             Show-Menu
         }
-        "8" {
-            Get-AlldebridHistory
-            Pause
-            Show-Menu
-        }
-        "9" {
+
+        "10" {
             Start-SpeedTest
             Pause
             Show-Menu
 
-        }
-
-        "10" {
-            Write-Host "`nVeuillez coller les liens AllDebrid à télécharger avec Aria2c (un par ligne), puis appuyez sur Entrée deux fois pour terminer." -ForegroundColor Green
-            # Cette fonction Read-HostMultipleLines n'est pas dans le script, vous devrez l'implémenter ou la remplacer
-            # Par exemple, une boucle simple:
-            $linksInput = @()
-            do {
-                $line = Read-Host "Entrez un lien (ou laissez vide et appuyez sur Entrée pour finir)"
-                if (-not [string]::IsNullOrWhiteSpace($line)) {
-                    $linksInput += $line.Trim()
-                }
-            } while (-not [string]::IsNullOrWhiteSpace($line))
-
-            $linksToDownload = $linksInput | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-
-            if ($linksToDownload.Count -gt 0) {
-                Write-Host "`nEntrez une catégorie optionnelle pour les téléchargements (laissez vide pour le dossier par défaut) :" -ForegroundColor DarkYellow
-                $category = Read-Host
-
-                Start-AlldebridAria2cDownload -Links $linksToDownload -Category $category
-            } else {
-                Write-Host "Aucun lien fourni. Retour au menu." -ForegroundColor Red
-                Pause
-                Show-Menu
-            }
         }
 
 # ██╗      ██████╗  ██████╗ █████╗ ██╗     ██╗  ██╗ ██████╗ ███████╗████████╗
@@ -3184,7 +4098,7 @@ function Show-Menu {
 
 
         "blyat" {
-        Write-Host "☭ Gloire à la mère patrie !" -ForegroundColor Red
+        Write-Host "☭ Слава родине !" -ForegroundColor Red
 
         # List of possible anthems
         $anthems = @(
@@ -3417,4 +4331,3 @@ Initialize-Config
 
 # Lancement du menu principal
 Show-Menu
-
