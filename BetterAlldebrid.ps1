@@ -5,7 +5,7 @@
 #  ╚██████╔╝██║     ██████╔╝██║  ██║   ██║   ███████╗██║  ██║
 #   ╚═════╝ ╚═╝     ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚══════╝╚═╝  ╚═╝
 
-$LocalVersion = "8.1"
+$LocalVersion = "9.0"
 
 $RemoteScriptUrl = "https://raw.githubusercontent.com/Pooueto/pooueto.github.io/refs/heads/main/BetterAlldebrid.ps1"
 
@@ -16,7 +16,7 @@ try {
             $RemoteVersion = $matches[1]
             if ([version]$RemoteVersion -gt [version]$LocalVersion) {
                 Write-Host "Nouvelle version disponible ($RemoteVersion), mise à jour en cours..."
-                Write-Centered "https://raw.githubusercontent.com/Pooueto/pooueto.github.io/refs/heads/main/changelog.txt" -ForegroundColor Red
+                Write-Host "https://raw.githubusercontent.com/Pooueto/pooueto.github.io/refs/heads/main/changelog.txt" -ForegroundColor Red
                 Write-Host "Ehhhh Ohhhh, je me suis pas cassé le cul a codé un changelog pour qu'il soit pas lu x)" -ForegroundColor Yellow
                 Copy-Item -Path $MyInvocation.MyCommand.Definition -Destination "$env:TEMP\BetterAlldebridFriendAPI_backup.ps1"
                 $RemoteScript.Content | Out-File -Encoding UTF8 -FilePath $MyInvocation.MyCommand.Definition -Force
