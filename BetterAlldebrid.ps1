@@ -5,7 +5,7 @@
 #  ╚██████╔╝██║     ██████╔╝██║  ██║   ██║   ███████╗██║  ██║
 #   ╚═════╝ ╚═╝     ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚══════╝╚═╝  ╚═╝
 
-$LocalVersion = "10.0"
+$LocalVersion = "10.1"
 
 $RemoteScriptUrl = "https://raw.githubusercontent.com/Pooueto/pooueto.github.io/refs/heads/main/BetterAlldebrid.ps1"
 
@@ -3763,11 +3763,11 @@ function Show-Menu {
 
         "4" {
             Write-Host ""
-            Write-Host "  ╔══════════════════════════════════════════════════════════════╗" -ForegroundColor Red
-            Write-Host "  ║   Really Fucking Fast But Complicated Multi Thread Blять    ║" -ForegroundColor Red
-            Write-Host "  ║   Accepte : liens HTTP(S), magnets (magnet:?xt=...), hash   ║" -ForegroundColor DarkYellow
-            Write-Host "  ║   SHA1 hex (40 car.) ou Base32 (32 car.) — mélange OK !    ║" -ForegroundColor DarkYellow
-            Write-Host "  ╚══════════════════════════════════════════════════════════════╝" -ForegroundColor Red
+            Write-Centered "  ╔══════════════════════════════════════════════════════════════╗" -ForegroundColor Red
+            Write-Centered "  ║        Really Fucking Fast But Complicated Shit Блять        ║" -ForegroundColor Red
+            Write-Centered "  ║   Accepte : liens HTTP(S), magnets (magnet:?xt=...), hash    ║" -ForegroundColor DarkYellow
+            Write-Centered "  ║   SHA1 hex (40 car.) ou Base32 (32 car.) — mélange OK !      ║" -ForegroundColor DarkYellow
+            Write-Centered "  ╚══════════════════════════════════════════════════════════════╝" -ForegroundColor Red
             Write-Host ""
 
             $inputs = @()
