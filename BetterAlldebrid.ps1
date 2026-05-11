@@ -5,7 +5,7 @@
 #  ╚██████╔╝██║     ██████╔╝██║  ██║   ██║   ███████╗██║  ██║
 #   ╚═════╝ ╚═╝     ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚══════╝╚═╝  ╚═╝
 
-$LocalVersion = "9.0"
+$LocalVersion = "10.0"
 
 $RemoteScriptUrl = "https://raw.githubusercontent.com/Pooueto/pooueto.github.io/refs/heads/main/BetterAlldebrid.ps1"
 
@@ -1772,19 +1772,23 @@ function Add-AlldebridTorrent {
 }
 
 # Fonction pour obtenir le statut d'un torrent
+# Utilise le nouvel endpoint /v4.1/magnet/status (POST) — /v4/ est deprecated depuis 16/10/2024
 function Get-TorrentStatus {
     param (
         [Parameter(Mandatory=$true)]
         [string]$MagnetId
     )
 
-    $apiUrl = "https://api.alldebrid.com/v4/magnet/status?agent=$userAgent&id=$MagnetId"
+    $apiUrl = "https://api.alldebrid.com/v4.1/magnet/status"
 
     try {
-        $response = Invoke-AlldebridApi -Url $apiUrl
+        $response = Invoke-AlldebridApi -Url $apiUrl -Method "Post" -Body "id=$MagnetId" -ContentType "application/x-www-form-urlencoded"
 
         if ($response.status -eq "success") {
-            return $response.data.magnets
+            # Le nouvel endpoint retourne toujours un tableau — on prend le premier élément
+            $magnets = $response.data.magnets
+            if ($magnets -is [System.Array]) { return $magnets[0] }
+            return $magnets
         } else {
             Write-Log "Erreur lors de la vérification du statut: $($response.error.message)"
             return $null
@@ -1796,11 +1800,12 @@ function Get-TorrentStatus {
 }
 
 # Fonction pour lister tous les torrents
+# Utilise le nouvel endpoint /v4.1/magnet/status (POST) sans id = tous les magnets
 function Get-AllTorrents {
-    $apiUrl = "https://api.alldebrid.com/v4/magnet/status?agent=$userAgent"
+    $apiUrl = "https://api.alldebrid.com/v4.1/magnet/status"
 
     try {
-        $response = Invoke-AlldebridApi -Url $apiUrl
+        $response = Invoke-AlldebridApi -Url $apiUrl -Method "Post"
 
         if ($response.status -eq "success") {
             return $response.data.magnets
@@ -1810,6 +1815,105 @@ function Get-AllTorrents {
         }
     } catch {
         Write-Log "Exception lors de l'appel à l'API: $_"
+        return $null
+    }
+}
+
+# Fonction pour obtenir les fichiers/liens d'un torrent (endpoint /v4/magnet/files)
+# Gère les deux formats de réponse possibles de l'API Alldebrid :
+#   - Format A : data.magnets.links[] avec { filename, size, link }
+#   - Format B : data.magnets.files[] avec { n, s, l } et sous-dossiers { e[] }
+function Get-TorrentFiles {
+    param (
+        [Parameter(Mandatory=$true)]
+        [string]$MagnetId
+    )
+
+    $apiUrl = "https://api.alldebrid.com/v4/magnet/files"
+
+    try {
+        $response = Invoke-AlldebridApi -Url $apiUrl -Method "Post" -Body "id[]=$MagnetId" -ContentType "application/x-www-form-urlencoded"
+
+        if ($response.status -ne "success") {
+            Write-Log "Erreur /magnet/files: $($response.error.message)"
+            # Fallback : essayer avec id= simple
+            $response = Invoke-AlldebridApi -Url $apiUrl -Method "Post" -Body "id=$MagnetId" -ContentType "application/x-www-form-urlencoded"
+            if ($response.status -ne "success") {
+                Write-Log "Erreur /magnet/files (fallback): $($response.error.message)"
+                return $null
+            }
+        }
+
+        # ── Log de debug pour diagnostiquer la structure de réponse ─────────
+        try {
+            $dbg = $response.data | ConvertTo-Json -Depth 100 -Compress
+            Write-Log "DEBUG /magnet/files (id=$MagnetId): $dbg"
+        } catch {}
+
+        # ── Extraction du magnet entry ────────────────────────────────────
+        $magnetEntry = $null
+        $raw = $response.data.magnets
+
+        if ($raw -is [System.Array] -or $raw -is [object[]]) {
+            $magnetEntry = $raw | Where-Object { [string]$_.id -eq [string]$MagnetId } | Select-Object -First 1
+            if (-not $magnetEntry) { $magnetEntry = $raw | Select-Object -First 1 }
+        } elseif ($raw -ne $null) {
+            # Objet unique (cas où on a passé un id précis)
+            $magnetEntry = $raw
+        }
+
+        if (-not $magnetEntry) {
+            Write-Log "Get-TorrentFiles: aucun magnet entry dans la réponse pour id=$MagnetId"
+            return $null
+        }
+
+        $normalized = @()
+
+        # ── Format A : .links[] avec { filename, size, link } ────────────
+        if ($magnetEntry.links -and $magnetEntry.links.Count -gt 0) {
+            foreach ($lnk in $magnetEntry.links) {
+                if ($lnk.link) {
+                    $normalized += [PSCustomObject]@{
+                        filename = if ($lnk.filename) { $lnk.filename } else { "fichier" }
+                        size     = if ($lnk.size)     { $lnk.size }     else { 0 }
+                        link     = $lnk.link
+                    }
+                }
+            }
+        }
+        # ── Format B : .files[] avec { n, s, l } et sous-dossiers { e[] } ─
+        elseif ($magnetEntry.files -and $magnetEntry.files.Count -gt 0) {
+            foreach ($f in $magnetEntry.files) {
+                if ($f.l) {
+                    $normalized += [PSCustomObject]@{ filename = $f.n; size = $f.s; link = $f.l }
+                } elseif ($f.e) {
+                    foreach ($sub in $f.e) {
+                        if ($sub.l) {
+                            $normalized += [PSCustomObject]@{ filename = "$($f.n)/$($sub.n)"; size = $sub.s; link = $sub.l }
+                        }
+                        # Niveau 3 (sous-sous-dossiers)
+                        elseif ($sub.e) {
+                            foreach ($subsub in $sub.e) {
+                                if ($subsub.l) {
+                                    $normalized += [PSCustomObject]@{ filename = "$($f.n)/$($sub.n)/$($subsub.n)"; size = $subsub.s; link = $subsub.l }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Write-Log "Get-TorrentFiles: $($normalized.Count) lien(s) trouvé(s) pour id=$MagnetId"
+
+        if ($normalized.Count -eq 0) {
+            Write-Log "Get-TorrentFiles: WARN 0 liens — structure inattendue. Voir DEBUG ci-dessus."
+            return $null
+        }
+        return $normalized
+
+    } catch {
+        Write-Log "Exception /magnet/files: $_"
         return $null
     }
 }
@@ -1837,6 +1941,13 @@ function Remove-Torrent {
         Write-Log "Exception lors de l'appel à l'API: $_"
         return $false
     }
+}
+
+# ── Helper : statuts "terminé" selon l'API v4.1 ─────────────────────────────
+# L'ancien endpoint /v4 retournait "downloaded", le nouveau /v4.1 retourne "Ready"
+function Test-TorrentDone {
+    param([string]$Status)
+    return ($Status -eq "downloaded" -or $Status -ieq "ready")
 }
 
 # Interface pour gérer les torrents
@@ -1880,6 +1991,7 @@ function Show-TorrentManager {
                 "active" { "Yellow" }
                 "downloading" { "Blue" }
                 "downloaded" { "Green" }
+            "Ready"     { "Green" }
                 "error" { "Red" }
                 default { "White" }
             }
@@ -2090,43 +2202,44 @@ function Show-TorrentDetails {
             "active" { "Yellow" }
             "downloading" { "Blue" }
             "downloaded" { "Green" }
+            "Ready"     { "Green" }
             "error" { "Red" }
             default { "White" }
         }
     )
 
-    if ($updatedTorrent.processing) {
-        Write-Host "Progression: $($updatedTorrent.processing.progress)%"
-        if ($updatedTorrent.processing.speed.bytes -gt 0) {
-            $speed = Format-Size -Bytes $updatedTorrent.processing.speed.bytes
+    # API v4.1 : plus de .processing, utilise downloadSpeed/downloaded/size
+    if (-not (Test-TorrentDone $updatedTorrent.status) -and $updatedTorrent.size -gt 0) {
+        $pct = [int]($updatedTorrent.downloaded / $updatedTorrent.size * 100)
+        Write-Host "Progression: $pct%"
+        if ($updatedTorrent.downloadSpeed -gt 0) {
+            $speed = Format-Size -Bytes $updatedTorrent.downloadSpeed
             Write-Host "Vitesse: $speed/s"
         }
-        if ($updatedTorrent.processing.eta.seconds -gt 0) {
-            $eta = [TimeSpan]::FromSeconds($updatedTorrent.processing.eta.seconds)
+        if ($updatedTorrent.downloadSpeed -gt 0 -and $updatedTorrent.size -gt $updatedTorrent.downloaded) {
+            $etaSec = ($updatedTorrent.size - $updatedTorrent.downloaded) / $updatedTorrent.downloadSpeed
+            $eta = [TimeSpan]::FromSeconds($etaSec)
             Write-Host "Temps restant: $($eta.ToString("hh\:mm\:ss"))"
         }
     }
 
-    Write-Host "Taille: $(Format-Size -Bytes $updatedTorrent.size.bytes)"
+    Write-Host "Taille: $(Format-Size -Bytes $updatedTorrent.size)"
     Write-Host "Date d'ajout: $($updatedTorrent.uploadDate)"
 
-    # Afficher les fichiers si disponibles
-    if ($updatedTorrent.links -and $updatedTorrent.links.Count -gt 0) {
-        Write-Host ""
-        Write-Host "Fichiers disponibles:" -ForegroundColor Green
-        $i = 1
-        foreach ($link in $updatedTorrent.links) {
-            Write-Host "$i. $($link.filename) ($(Format-Size -Bytes $link.size))"
-            $i++
+    # Afficher les fichiers via le nouvel endpoint /v4/magnet/files
+    if (Test-TorrentDone $updatedTorrent.status) {
+        $torrentFiles = Get-TorrentFiles -MagnetId $updatedTorrent.id
+        if ($torrentFiles -and $torrentFiles.Count -gt 0) {
+            Write-Host ""
+            Write-Host "Fichiers disponibles:" -ForegroundColor Green
+            $i = 1
+            foreach ($f in $torrentFiles) {
+                Write-Host "$i. $($f.filename) ($(Format-Size -Bytes $f.size))"
+                $i++
+            }
         }
-    } elseif ($updatedTorrent.files -and $updatedTorrent.files.Count -gt 0) {
-        Write-Host ""
-        Write-Host "Fichiers à télécharger (pas encore prêts):" -ForegroundColor Yellow
-        $i = 1
-        foreach ($file in $updatedTorrent.files) {
-            Write-Host "$i. $($file.n) ($(Format-Size -Bytes $file.s))"
-            $i++
-        }
+    } else {
+        Write-Host "  (Fichiers disponibles une fois le torrent téléchargé côté Alldebrid)" -ForegroundColor DarkGray
     }
 
     Write-Host ""
@@ -2150,7 +2263,7 @@ function Download-TorrentFiles {
     }
 
     # ── Vérification : le torrent doit être "downloaded" côté Alldebrid ──────
-    if ($updatedTorrent.status -ne "downloaded") {
+    if (-not (Test-TorrentDone $updatedTorrent.status)) {
         Clear-Host
         Write-Host "===== Téléchargement des fichiers du torrent =====" -ForegroundColor Cyan
         Write-Host ""
@@ -2164,7 +2277,7 @@ function Download-TorrentFiles {
             Wait-ForTorrentCompletion -MagnetId $updatedTorrent.id
             # Rafraîchir après attente
             $updatedTorrent = Get-TorrentStatus -MagnetId $Torrent.id
-            if ($null -eq $updatedTorrent -or $updatedTorrent.status -ne "downloaded") {
+            if ($null -eq $updatedTorrent -or -not (Test-TorrentDone $updatedTorrent.status)) {
                 Write-Host "  Torrent toujours non prêt. Abandon." -ForegroundColor Red
                 Pause; return
             }
@@ -2173,7 +2286,10 @@ function Download-TorrentFiles {
         }
     }
 
-    if (-not $updatedTorrent.links -or $updatedTorrent.links.Count -eq 0) {
+    # Récupérer les fichiers via le nouvel endpoint /v4/magnet/files
+    $torrentLinks = Get-TorrentFiles -MagnetId $updatedTorrent.id
+
+    if (-not $torrentLinks -or $torrentLinks.Count -eq 0) {
         Write-Host "  Aucun lien disponible pour ce torrent." -ForegroundColor Red
         Pause; return
     }
@@ -2186,14 +2302,14 @@ function Download-TorrentFiles {
     Write-Host "  Fichiers disponibles :" -ForegroundColor Cyan
 
     $i = 1
-    foreach ($link in $updatedTorrent.links) {
+    foreach ($link in $torrentLinks) {
         Write-Host ("  {0,3}. {1}  ({2})" -f $i, $link.filename, (Format-Size -Bytes $link.size))
         $i++
     }
 
     Write-Host ""
     Write-Host "  Options :"
-    Write-Host "    1-$($updatedTorrent.links.Count) : Télécharger un fichier spécifique"
+    Write-Host "    1-$($torrentLinks.Count) : Télécharger un fichier spécifique"
     Write-Host "    A           : Télécharger tous les fichiers (via aria2)"
     Write-Host "    R           : Retour"
 
@@ -2206,15 +2322,15 @@ function Download-TorrentFiles {
             New-Item -ItemType Directory -Path $torrentFolder | Out-Null
         }
 
-        $links = @($updatedTorrent.links | ForEach-Object { $_.link })
+        $links = @($torrentLinks | ForEach-Object { $_.link })
 
         Write-Host "`n  Débridage + téléchargement de $($links.Count) fichier(s) via aria2..." -ForegroundColor Cyan
         Start-AlldebridAria2cDownload -Links $links -Category (Split-Path -Leaf $torrentFolder)
     }
 
     # ── Téléchargement d'UN fichier spécifique via aria2 ─────────────────────
-    elseif ($choice -match "^\d+$" -and [int]$choice -gt 0 -and [int]$choice -le $updatedTorrent.links.Count) {
-        $fileLink = $updatedTorrent.links[[int]$choice - 1].link
+    elseif ($choice -match "^\d+$" -and [int]$choice -gt 0 -and [int]$choice -le $torrentLinks.Count) {
+        $fileLink = $torrentLinks[[int]$choice - 1].link
 
         Write-Host "`n  Débridage + téléchargement via aria2..." -ForegroundColor Cyan
         Start-AlldebridAria2cDownload -Links @($fileLink)
@@ -2267,7 +2383,8 @@ function Wait-ForTorrentInitialization {
 function Wait-ForTorrentCompletion {
     param (
         [Parameter(Mandatory=$true)]
-        [string]$MagnetId
+        [string]$MagnetId,
+        [switch]$Silent   # Si activé, ne pas appeler Pause à la fin (utilisation automatisée)
     )
 
     Clear-Host
@@ -2287,7 +2404,7 @@ function Wait-ForTorrentCompletion {
             break
         }
 
-        if ($status.status -eq "downloaded") {
+        if (Test-TorrentDone $status.status) {
             Write-Host "`nTéléchargement terminé!" -ForegroundColor Green
             $complete = $true
         }
@@ -2300,13 +2417,14 @@ function Wait-ForTorrentCompletion {
 
             # Mise à jour toutes les 3 secondes
             if (($currentTime - $lastUpdate).TotalSeconds -ge 3) {
-                $progress = if ($status.processing) { $status.processing.progress } else { 0 }
-                $speed = if ($status.processing -and $status.processing.speed.bytes -gt 0) {
-                    Format-Size -Bytes $status.processing.speed.bytes
+                # Nouveaux champs API v4.1 : downloadSpeed, downloaded, size (plus de .processing)
+                $progress = if ($status.size -gt 0) { [int]($status.downloaded / $status.size * 100) } else { 0 }
+                $speed = if ($status.downloadSpeed -gt 0) {
+                    Format-Size -Bytes $status.downloadSpeed
                 } else { "N/A" }
 
-                $eta = if ($status.processing -and $status.processing.eta.seconds -gt 0) {
-                    $etaTime = [TimeSpan]::FromSeconds($status.processing.eta.seconds)
+                $eta = if ($status.downloadSpeed -gt 0 -and $status.size -gt $status.downloaded) {
+                    $etaTime = [TimeSpan]::FromSeconds(($status.size - $status.downloaded) / $status.downloadSpeed)
                     $etaTime.ToString("hh\:mm\:ss")
                 } else { "Calcul..." }
 
@@ -2331,7 +2449,7 @@ function Wait-ForTorrentCompletion {
         }
     }
 
-    Pause
+    if (-not $Silent) { Pause }
 }
 
 
@@ -2490,6 +2608,78 @@ function Start-Aria2cDownload {
         $process.Dispose()
     }
 }
+
+# --- Téléchargement direct depuis un magnet / hash de torrent via aria2 ---
+# Accepte : lien magnet (magnet:?xt=...), hash SHA1 hex (40 chars) ou Base32 (32 chars)
+# Workflow : Add-AlldebridTorrent → Wait-ForTorrentCompletion → Start-AlldebridAria2cDownload
+function Start-TorrentDirectDownload {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$TorrentSource,
+        [string]$Category = ""
+    )
+
+    # ── Détection et normalisation du hash nu ────────────────────────────────
+    if ($TorrentSource -match '^[0-9a-fA-F]{40}$') {
+        # Hash SHA1 hexadécimal (40 caractères)
+        $TorrentSource = "magnet:?xt=urn:btih:$TorrentSource"
+        Write-Host "  [Torrent] Hash SHA1 hex détecté — converti en magnet." -ForegroundColor DarkGray
+    } elseif ($TorrentSource -match '^[A-Za-z2-7]{32}$') {
+        # Hash SHA1 encodé Base32 (32 caractères)
+        $TorrentSource = "magnet:?xt=urn:btih:$TorrentSource"
+        Write-Host "  [Torrent] Hash Base32 détecté — converti en magnet." -ForegroundColor DarkGray
+    }
+
+    $shortSrc = $TorrentSource.Substring(0, [Math]::Min($TorrentSource.Length, 80))
+    Write-Host "`n  [Torrent] Envoi à Alldebrid : $shortSrc..." -ForegroundColor Cyan
+    Write-Log "Torrent soumis via option 4 : $shortSrc"
+
+    $magnetInfo = Add-AlldebridTorrent -TorrentSource $TorrentSource
+
+    if ($null -eq $magnetInfo) {
+        Write-Host "  [Torrent] Echec de l'ajout. Vérifiez votre lien ou le gestionnaire (option 9)." -ForegroundColor Red
+        Write-Log "Echec ajout torrent : $shortSrc"
+        return
+    }
+
+    Write-Host "  [Torrent] Ajouté : $($magnetInfo.filename)  (ID: $($magnetInfo.id))" -ForegroundColor Green
+    Write-Log "Torrent ajouté : $($magnetInfo.filename) id=$($magnetInfo.id) statut=$($magnetInfo.status)"
+
+    # ── Attente du traitement côté Alldebrid ────────────────────────────────
+    if (-not (Test-TorrentDone $magnetInfo.status)) {
+        Write-Host "  [Torrent] Statut actuel : $($magnetInfo.status) — attente du traitement par Alldebrid..." -ForegroundColor Yellow
+        Wait-ForTorrentCompletion -MagnetId $magnetInfo.id -Silent
+    }
+
+    # ── Vérification du statut final ────────────────────────────────────────
+    $torrent = Get-TorrentStatus -MagnetId $magnetInfo.id
+    if ($null -eq $torrent -or -not (Test-TorrentDone $torrent.status)) {
+        $st = if ($torrent) { $torrent.status } else { "inconnu" }
+        Write-Host "  [Torrent] Non disponible après attente (statut : $st)." -ForegroundColor Red
+        Write-Host "  Vous pouvez le reprendre plus tard via le gestionnaire de torrents (option 9)." -ForegroundColor Yellow
+        Write-Log "Torrent non prêt après attente : id=$($magnetInfo.id) statut=$st"
+        return
+    }
+
+    # ── Récupération des liens via /v4/magnet/files (les liens ne sont plus dans /magnet/status v4.1)
+    $torrentFiles = Get-TorrentFiles -MagnetId $magnetInfo.id
+
+    if (-not $torrentFiles -or $torrentFiles.Count -eq 0) {
+        Write-Host "  [Torrent] Aucun lien de téléchargement récupéré (voir alldebrid_log.txt pour debug)." -ForegroundColor Red
+        Write-Log "Torrent sans liens après Get-TorrentFiles : id=$($magnetInfo.id)"
+        return
+    }
+
+    # ── Téléchargement de tous les fichiers via aria2 ───────────────────────
+    $folderName = if ($Category -ne "") { $Category } else { Remove-InvalidFileNameChars -Name $torrent.filename }
+    $links = @($torrentFiles | ForEach-Object { $_.link })
+
+    Write-Host "`n  [Torrent] $($links.Count) fichier(s) prêt(s) — démarrage aria2..." -ForegroundColor Green
+    Write-Log "Torrent prêt, téléchargement de $($links.Count) fichier(s) : $($torrent.filename) → dossier=$folderName"
+
+    Start-AlldebridAria2cDownload -Links $links -Category $folderName
+}
+
 
 # --- Nouvelle fonction pour gérer les téléchargements via Aria2c ---
 $MaxParallelDownloads = 10  # A ajuster selon ta connexion
@@ -3572,25 +3762,62 @@ function Show-Menu {
         }
 
         "4" {
-            $linksInput = @()
+            Write-Host ""
+            Write-Host "  ╔══════════════════════════════════════════════════════════════╗" -ForegroundColor Red
+            Write-Host "  ║   Really Fucking Fast But Complicated Multi Thread Blять    ║" -ForegroundColor Red
+            Write-Host "  ║   Accepte : liens HTTP(S), magnets (magnet:?xt=...), hash   ║" -ForegroundColor DarkYellow
+            Write-Host "  ║   SHA1 hex (40 car.) ou Base32 (32 car.) — mélange OK !    ║" -ForegroundColor DarkYellow
+            Write-Host "  ╚══════════════════════════════════════════════════════════════╝" -ForegroundColor Red
+            Write-Host ""
+
+            $inputs = @()
             do {
-                $line = Read-Host "Liens a débridés ou vide pour finir "
+                $line = Read-Host "  Lien / magnet / hash (vide pour finir)"
                 if (-not [string]::IsNullOrWhiteSpace($line)) {
-                    $linksInput += $line.Trim()
+                    $inputs += $line.Trim()
                 }
             } while (-not [string]::IsNullOrWhiteSpace($line))
 
-            $linksToDownload = $linksInput | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-
-            if ($linksToDownload.Count -gt 0) {
-                Write-Host "`Catégorie optionnelle (vide pour default) : " -ForegroundColor DarkYellow
-                $category = Read-Host
-
-                Start-AlldebridAria2cDownload -Links $linksToDownload -Category $category
-            } else {
-                Write-Host "Aucun lien fourni. Retour au menu." -ForegroundColor Red
+            if ($inputs.Count -eq 0) {
+                Write-Host "Aucune entrée fournie. Retour au menu." -ForegroundColor Red
                 Pause
                 Show-Menu
+                break
+            }
+
+            Write-Host ""
+            Write-Host "  Catégorie optionnelle (vide pour défaut) : " -ForegroundColor DarkYellow -NoNewline
+            $category = Read-Host
+
+            # ── Classification des entrées ────────────────────────────────────
+            $torrentSources = @()
+            $classicLinks   = @()
+
+            foreach ($entry in $inputs) {
+                if ($entry -match '^magnet:\?' -or
+                    $entry -match '^[0-9a-fA-F]{40}$' -or
+                    $entry -match '^[A-Za-z2-7]{32}$') {
+                    $torrentSources += $entry
+                } else {
+                    $classicLinks += $entry
+                }
+            }
+
+            if ($torrentSources.Count -gt 0) {
+                Write-Host "`n  $($torrentSources.Count) torrent(s) détecté(s) — traitement via Alldebrid + aria2..." -ForegroundColor Cyan
+            }
+            if ($classicLinks.Count -gt 0) {
+                Write-Host "  $($classicLinks.Count) lien(s) classique(s) — débridage + aria2..." -ForegroundColor Cyan
+            }
+
+            # ── Torrents : Add → Wait → Download ─────────────────────────────
+            foreach ($src in $torrentSources) {
+                Start-TorrentDirectDownload -TorrentSource $src -Category $category
+            }
+
+            # ── Liens classiques : Unlock → aria2 ────────────────────────────
+            if ($classicLinks.Count -gt 0) {
+                Start-AlldebridAria2cDownload -Links $classicLinks -Category $category
             }
         }
 
