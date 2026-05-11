@@ -8,6 +8,9 @@ MISE A JOUR MAJEURE : LA REFONTE INTEGRALE
 - Autonomie : Aria2 se télécharge et s'installe tout seul s'il n'est pas détecté sur le PC.
 - Optimisation de l'extrême : Intégration du multithreading, multicore, multi-connexion et multi-runspace. Les téléchargements sont maintenant poussés au maximum de ce qui est possible. 10 DL a la fois, chacuns repartis sur 16 connetions au serveur alldebrid en meme temps !
 
+	» TORRENT
+- Refonte complete du system de torrent pour la nouvelle version de l'API de alldebrid, et intégration au nouveau systeme de DL via Aria. Gestion des liens magnets, et des hash. Téléchargement automatique sur les serveur de alldebrid, puis telechargement en local par la suite. 
+
 	» STREAMING (VLC)
 - Amélioration majeure du mode streaming.
 - Support multi-liens : Possibilité d'envoyer plusieurs liens à la fois pour générer automatiquement une playlist dans VLC.
