@@ -5,7 +5,7 @@
 #  ╚██████╔╝██║     ██████╔╝██║  ██║   ██║   ███████╗██║  ██║
 #   ╚═════╝ ╚═╝     ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚══════╝╚═╝  ╚═╝
 
-$LocalVersion = "10.1"
+$LocalVersion = "10.2"
 
 $RemoteScriptUrl = "https://raw.githubusercontent.com/Pooueto/pooueto.github.io/refs/heads/main/BetterAlldebrid.ps1"
 
@@ -2823,6 +2823,10 @@ function Start-AlldebridAria2cDownload {
             }
 
             $process.WaitForExit()
+            $errOutput = $process.StandardError.ReadToEnd().Trim()
+            if ($errOutput -and $process.ExitCode -ne 0) {
+                $syncEntry.Status = "aria2c : $($errOutput.Substring(0, [Math]::Min($errOutput.Length, 200)))"
+            }
             $syncEntry.Success = ($process.ExitCode -eq 0)
 
             # Supprimer le fichier de session si téléchargement terminé avec succès
