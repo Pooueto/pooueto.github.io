@@ -5,7 +5,7 @@
 #  ╚██████╔╝██║     ██████╔╝██║  ██║   ██║   ███████╗██║  ██║
 #   ╚═════╝ ╚═╝     ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚══════╝╚═╝  ╚═╝
 
-$LocalVersion = "10.2"
+$LocalVersion = "10.3"
 
 $RemoteScriptUrl = "https://raw.githubusercontent.com/Pooueto/pooueto.github.io/refs/heads/main/BetterAlldebrid.ps1"
 
@@ -4150,6 +4150,13 @@ function Show-Menu {
                                     local:Job-Write-Log "Démarrage du téléchargement de '$FileName' pour $ClientIP vers '$DownloadDestFolder' avec aria2..."
                                     Write-Host "[$(Get-Date -Format 'HH:mm:ss')] [Job] Démarrage du téléchargement de '$FileName' pour $ClientIP vers '$DownloadDestFolder' avec aria2..." -ForegroundColor Blue
                                     try {
+
+                                    local:Job-Write-Log "DEBUG URL reçue par le Job : '$DownloadUrl'"
+        
+                                    if ([string]::IsNullOrWhiteSpace($DownloadUrl)) {
+                                        local:Job-Write-Log "❌ ERREUR CRITIQUE : L'URL transmise au Job est VIDE ou NULL !"
+                                        return
+                                    }
                                         # Construct the aria2 command
                                         # -d: directory to save files
                                         # -o: output filename
@@ -4170,7 +4177,7 @@ function Show-Menu {
                                             '--log-level=warn',
                                             '--summary-interval=5'
                                         )
-
+                                        local:Job-Write-Log "Arguments envoyés à aria2c : $($aria2Args -join ' ')"
                                         # Execute aria2c.exe
                                         $process = Start-Process -FilePath $Aria2ExecutablePath -ArgumentList $aria2Args -NoNewWindow -PassThru -Wait
 
